@@ -1,0 +1,57 @@
+%load_ext autoreload
+%autoreload 2
+
+import pandas as pd
+from imperative_model import *
+from load_from_rdf import *
+
+from rdflib import Namespace
+from probs_runner import probs_endpoint
+
+rdf_data_path = "../../system-definitions/_build/probs_rdf/output.ttl"
+model_def_path = "model.ttl"
+
+MODEL_NS = Namespace("http://c-thru.org/analyses/calculator/model/")
+model_uri = MODEL_NS["Model"]
+
+with probs_endpoint([rdf_data_path, model_def_path]) as rdfox:
+    model, recipe_data = query_model_from_endpoint(rdfox, model_uri, allocate_backwards=["Hydrogen"])
+
+demand_urea = sy.Symbol("Z_1")
+h2_coal_fraction = sy.Symbol("a_1")
+
+builder = ModelBuilder(model)
+builder.pull_production(
+    "Urea", demand_urea, until_objects=["Water", "CO2"],
+    allocate_backwards={
+        "Hydrogen": {
+            "HydrogenSynthesisFromCoal": h2_coal_fraction,
+            "HydrogenSynthesisFromNaturalGas": 1 - h2_coal_fraction,
+        },
+    }
+)
+builder.fill_blanks(fill_value=0.1)
+# builder.pull_production("P2", demand2, until_objects=["PP", "PE"])
+# builder.push_consumption("EOL", eol, until_objects=["Recovered"])
+# builder.balance_production(
+#     "PE",
+#     "Recycling",
+#     limit=[
+#         ("production", "Recovered"),
+#     ]
+# )
+# builder.balance_production("PE", "SC1")
+# builder.balance_production("PP", "SC2")
+# builder.balance_consumption(
+#     "Recovered",
+#     "Disposal",
+# )
+
+
+
+# def subs_dict(d, values):
+#     return {k: v.subs(values) for k, v in d.items()}
+
+def solution_to_flows(m, values):
+    all_values = {**recipe_data, **values}
+    return m.to_flows(all_values)

@@ -1,0 +1,22 @@
+
+@prefix model: <http://c-thru.org/analyses/calculator/model/> .
+@prefix sys: <http://c-thru.org/analyses/calculator/system/> .
+@prefix probs: <https://ukfires.org/probs/ontology/> .
+
+model:Model probs:hasProcess
+  sys:ProducingUrea,
+  sys:AmmoniaSynthesis,
+  sys:HydrogenSynthesisFromNaturalGas,
+  sys:HydrogenSynthesisFromCoal.
+
+model:Model probs:hasObject
+  sys:NaturalGas,
+  sys:Coal,
+  sys:Syngas,
+  sys:Ammonia,
+  sys:CO2,
+  sys:Hydrogen,
+  sys:Nitrogen,
+  sys:Urea,
+  sys:Water,
+  sys:OtherIndustrialGases .

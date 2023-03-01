@@ -1,0 +1,269 @@
+@prefix probs: <https://ukfires.org/probs/ontology/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rec: <https://ukfires.org/probs/ontology/recipe/> .
+@prefix sys: <http://c-thru.org/analyses/calculator/system/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+sys:PrimaryChemicalsProduction a probs:Process ;
+    rdfs:label "Primary chemicals production" ;
+    probs:consumes sys:NaturalGas,
+        sys:RefineryProducts ;
+    probs:processComposedOf sys:AmmoniaSynthesis,
+        sys:HydrogenSynthesis ;
+    probs:processName "Primary chemicals production" ;
+    probs:produces sys:NaturalGas,
+        sys:PrimaryChemicals .
+
+sys:ProducingUrea a probs:Process ;
+    rdfs:label "ProducingUrea" ;
+    probs:consumes sys:Ammonia,
+        sys:CO2 ;
+    probs:processName "ProducingUrea" ;
+    probs:produces sys:OtherIndustrialGases,
+        sys:Urea,
+        sys:Water ;
+    rec:hasRecipe [ probs:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:CO2 ;
+                    rec:quantity 7.5e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Ammonia ;
+                    rec:quantity 5.8e-01 ] ;
+            probs:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Urea ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Water ;
+                    rec:quantity 3e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:OtherIndustrialGases ;
+                    rec:quantity 3e-02 ] ] .
+
+sys:AmmoniaSynthesis a probs:Process ;
+    rdfs:label "AmmoniaSynthesis" ;
+    probs:consumes sys:Hydrogen,
+        sys:Nitrogen ;
+    probs:processName "AmmoniaSynthesis" ;
+    probs:produces sys:Ammonia ;
+    rec:hasRecipe [ probs:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Nitrogen ;
+                    rec:quantity 5e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Hydrogen ;
+                    rec:quantity 5e-01 ] ;
+            probs:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Ammonia ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:Benzene a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Benzene" ;
+    probs:objectName "Benzene" .
+
+sys:Butadiene a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Butadiene" ;
+    probs:objectName "Butadiene" .
+
+sys:Butane a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Butane" ;
+    probs:objectName "Butane" .
+
+sys:Butylenes a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Butylenes" ;
+    probs:objectName "Butylenes" .
+
+sys:CarbonBlack a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Carbon black" ;
+    probs:objectName "Carbon black" .
+
+sys:Ethane a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Ethane" ;
+    probs:objectName "Ethane" .
+
+sys:Ethylene a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Ethylene" ;
+    probs:objectName "Ethylene" .
+
+sys:FossilFuels a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Fossil fuels" ;
+    probs:objectComposedOf sys:Coal,
+        sys:NaturalGas,
+        sys:Oil ;
+    probs:objectName "Fossil fuels" .
+
+sys:HydrogenSynthesis a probs:Process ;
+    rdfs:label "Hydrogen synthesis" ;
+    probs:consumes sys:FossilFuels ;
+    probs:processComposedOf sys:HydrogenSynthesisFromCoal,
+        sys:HydrogenSynthesisFromNaturalGas ;
+    probs:processName "Hydrogen synthesis" ;
+    probs:produces sys:Hydrogen .
+
+sys:HydrogenSynthesisFromCoal a probs:Process ;
+    rdfs:label "Hydrogen synthesis from coal" ;
+    probs:consumes sys:Coal,
+        sys:Water ;
+    probs:processName "Hydrogen synthesis from coal" ;
+    probs:produces sys:CO2,
+        sys:Hydrogen ;
+    rec:hasRecipe [ probs:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Coal ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Water ;
+                    rec:quantity 1e+00 ] ;
+            probs:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:CO2 ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Hydrogen ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:HydrogenSynthesisFromNaturalGas a probs:Process ;
+    rdfs:label "Hydrogen synthesis from natural gas" ;
+    probs:consumes sys:NaturalGas,
+        sys:Water ;
+    probs:processName "Hydrogen synthesis from natural gas" ;
+    probs:produces sys:CO2,
+        sys:Hydrogen ;
+    rec:hasRecipe [ probs:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:NaturalGas ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Water ;
+                    rec:quantity 1e+00 ] ;
+            probs:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:CO2 ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Hydrogen ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:MethylAlcohol a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Methyl alcohol" ;
+    probs:objectName "Methyl alcohol" .
+
+sys:MiscRefineryProducts a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Misc. refinery products" ;
+    probs:objectName "Misc. refinery products" .
+
+sys:Naphtha a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Naphtha" ;
+    probs:objectName "Naphtha" .
+
+sys:Oil a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Oil" ;
+    probs:objectName "Oil" .
+
+sys:OilBitumen a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Oil bitumen" ;
+    probs:objectName "Oil bitumen" .
+
+sys:PrimaryChemicals a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Primary chemicals" ;
+    probs:objectComposedOf sys:Ammonia,
+        sys:Benzene,
+        sys:Butadiene,
+        sys:Butylenes,
+        sys:CarbonBlack,
+        sys:Ethylene,
+        sys:MethylAlcohol,
+        sys:Propylene,
+        sys:Syngas,
+        sys:Toluene,
+        sys:Xylenes ;
+    probs:objectName "Primary chemicals" .
+
+sys:Propane a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Propane" ;
+    probs:objectName "Propane" .
+
+sys:Propylene a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Propylene" ;
+    probs:objectName "Propylene" .
+
+sys:RefineryProducts a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Refinery products" ;
+    probs:objectComposedOf sys:Butane,
+        sys:Ethane,
+        sys:MiscRefineryProducts,
+        sys:Naphtha,
+        sys:OilBitumen,
+        sys:Propane ;
+    probs:objectName "Refinery products" .
+
+sys:Syngas a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Syngas" ;
+    probs:objectName "Syngas" .
+
+sys:Toluene a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Toluene" ;
+    probs:objectName "Toluene" .
+
+sys:Xylenes a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Xylenes" ;
+    probs:objectName "Xylenes" .
+
+sys:Nitrogen a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Nitrogen" ;
+    probs:objectName "Nitrogen" .
+
+sys:OtherIndustrialGases a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Other industrial gases" ;
+    probs:objectName "Other industrial gases" .
+
+sys:Urea a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Urea" ;
+    probs:objectName "Urea" .
+
+sys:Coal a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Coal" ;
+    probs:objectName "Coal" .
+
+sys:Ammonia a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Ammonia" ;
+    probs:objectName "Ammonia" .
+
+sys:NaturalGas a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Natural gas" ;
+    probs:objectName "Natural gas" .
+
+sys:CO2 a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "CO2" ;
+    probs:objectName "CO2" .
+
+sys:Water a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Water" ;
+    probs:objectName "Water" .
+
+sys:Hydrogen a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Hydrogen" ;
+    probs:objectName "Hydrogen" .
+

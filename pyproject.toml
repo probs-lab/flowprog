@@ -1,0 +1,18 @@
+[project]
+name = "mass_flow_model"
+authors = [
+    {name = "Rick Lupton", email = "mail@ricklupton.name"},
+]
+description = "Parameterised procedural mass flows models"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "BSD-3-Clause"}
+# dependencies = [
+#     "requests",
+#     'importlib-metadata; python_version<"3.8"',
+# ]
+dynamic = ["version"]
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"

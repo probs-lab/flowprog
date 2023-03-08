@@ -32,11 +32,11 @@ Primary chemicals production
 ---
 label: Hydrogen synthesis from natural gas
 consumes: |
-  NaturalGas                               = 1.0 kg
-  Water                                    = 1.0 kg
+  ukf:NaturalGas                               = 1.0 kg
+  ukf:Water                                    = 1.0 kg
 produces: |
-  CO2                                      = 1.0 kg
-  Hydrogen                                 = 1.0 kg
+  ukf:CO2                                      = 1.0 kg
+  ukf:Hydrogen                                 = 1.0 kg
 ---
 
 TODO: made up recipe
@@ -49,11 +49,11 @@ Steam methane reforming followed by water gas shift reaction.
 ---
 label: Hydrogen synthesis from coal
 consumes: |
-  Coal                                     = 1.0 kg
-  Water                                    = 1.0 kg
+  ukf:Coal                                     = 1.0 kg
+  ukf:Water                                    = 1.0 kg
 produces: |
-  CO2                                      = 1.0 kg
-  Hydrogen                                 = 1.0 kg
+  ukf:CO2                                      = 1.0 kg
+  ukf:Hydrogen                                 = 1.0 kg
 ---
 
 TODO: made up recipe
@@ -68,14 +68,17 @@ Partial oxidisation followed by water gas shift reaction.
 ```{system:process} AmmoniaSynthesis
 ---
 consumes: |
-  Hydrogen                                 = 0.5 kg
-  Nitrogen                                 = 0.5 kg
+  ukf:Hydrogen                                 = 0.5 kg
+  ukf:Nitrogen                                 = 0.5 kg
 produces: |
-  Ammonia                                  = 1.0 kg
+  ukf:Ammonia                                  = 1.0 kg
 ---
 
 TODO: made up recipe
 The IHS database probably contains data on ammonia production in the UK. These data should be added here.
+
+This process is defined slightly differently from UK FIRES -- consuming Hydrogen
+and Nitrogen, not Syngas.
 ```
 
 ```{end-sub-processes}
@@ -194,12 +197,12 @@ Fertilliser production
 ````{system:process} ProducingUrea
 ---
 consumes: |
-  Ammonia                                  = 0.58 kg
+  ukf:Ammonia                                  = 0.58 kg
   CO2                                      = 0.75 kg {comment: 'check CO2 type: atmospheric CO2 or other CO2'}
 produces: |
-  Urea                                     = 1.0 kg
-  Water                                    = 0.30 kg
-  OtherIndustrialGases                     = 0.03 kg {comment: 'CO2'}
+  ukf:Urea                                     = 1.0 kg
+  ukf:Water                                    = 0.30 kg
+  ukf:OtherIndustrialGases                     = 0.03 kg {comment: 'CO2'}
 ---
 
 Copied from UK FIRES (unchanged).
@@ -208,11 +211,11 @@ Copied from UK FIRES (unchanged).
 ````{system:process} ProducingAmmoniumNitrate
 ---
 consumes: |
-  Ammonia                                  = 0.22 kg
-  NitricAcid                               = 0.80 kg {comment: 'nitric acid(HNO3)'}
+  ukf:Ammonia                                  = 0.22 kg
+  ukf:NitricAcid                               = 0.80 kg {comment: 'nitric acid(HNO3)'}
 produces: |
-  AmmoniumNitrate                          = 1.0 kg
-  WasteOtherChemicals                      = 0.02 kg {comment: 'nitric acid(HNO3)'}
+  ukf:AmmoniumNitrate                          = 1.0 kg
+  ukf:WasteOtherChemicals                      = 0.02 kg {comment: 'nitric acid(HNO3)'}
 ---
 Copied from UK FIRES (unchanged).
 ````
@@ -220,12 +223,12 @@ Copied from UK FIRES (unchanged).
 ```{system:process} ProducingNitricAcid
 ---
 consumes: |
-  Ammonia                                  = 0.34 kg
-  PureOxygen                               = 1.28 kg
-  Water                                    = 0.18 kg
+  ukf:Ammonia                                  = 0.34 kg
+  ukf:PureOxygen                               = 1.28 kg
+  ukf:Water                                    = 0.18 kg
 produces: |
-  NitricAcid                               = 1.26 kg
-  Water                                    = 0.54 kg
+  ukf:NitricAcid                               = 1.26 kg
+  ukf:Water                                    = 0.54 kg
 ---
 
 Copied from UK FIRES -- but the recipe is not balanced FIXME
@@ -248,7 +251,7 @@ FIXME doesn't include N2O emissions.
 ```{system:process} ExtractCO2FromAtmosphere
 ---
 consumes: |
-  AtmoshericCO2                            = 1.00 kg
+  ukf:AtmoshericCO2                            = 1.00 kg
 produces: |
   CO2                                      = 1.00 kg
 ---

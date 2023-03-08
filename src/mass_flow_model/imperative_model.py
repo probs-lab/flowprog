@@ -154,19 +154,24 @@ class ModelBuilder:
         self._process_name_to_idx = {proc.id: j for j, proc in enumerate(m.processes)}
 
         processes_producing_object: dict[int, list[int]] = {}
+        processes_consuming_object: dict[int, list[int]] = {}
         for j in range(len(m.processes)):
-            for obj_name in m.processes[j].produces:
+            p = m.processes[j]
+
+            if not p.consumes and not p.produces:
+                raise ValueError("Process %s has no recipe" % p.id)
+
+            for obj_name in p.produces:
                 idx = self._obj_name_to_idx[obj_name]
                 processes_producing_object.setdefault(idx, [])
                 processes_producing_object[idx] += [j]
-        self._processes_producing_object = processes_producing_object
 
-        processes_consuming_object: dict[int, list[int]] = {}
-        for j in range(len(m.processes)):
-            for obj_name in m.processes[j].consumes:
+            for obj_name in p.consumes:
                 idx = self._obj_name_to_idx[obj_name]
                 processes_consuming_object.setdefault(idx, [])
                 processes_consuming_object[idx] += [j]
+
+        self._processes_producing_object = processes_producing_object
         self._processes_consuming_object = processes_consuming_object
 
     def _lookup_process(self, process_id: str) -> int:

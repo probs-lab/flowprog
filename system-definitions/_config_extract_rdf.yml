@@ -3,6 +3,8 @@ sphinx:
     - sphinx_probs_rdf
   config:
     probs_rdf_system_prefix: "http://c-thru.org/analyses/calculator/system/"
+    probs_rdf_extra_prefixes:
+      ukf: "http://ukfires.org/probs/system/"
 
 execute:
   execute_notebooks: "off"

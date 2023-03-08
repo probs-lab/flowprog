@@ -32,7 +32,7 @@ def query_processes(rdfox, model_uri):
                 ?recipe ?producesOrConsumes [ recipe:object ?recipeObject ;
                                               recipe:quantity ?recipeQuantity ;
                                               recipe:metric ?recipeMetric ] .
-                FILTER( ?producesOrConsumes = :produces || ?producesOrConsumes = :consumes )
+                FILTER( ?producesOrConsumes = recipe:produces || ?producesOrConsumes = recipe:consumes )
             }
         }
         ORDER BY ?process
@@ -60,8 +60,8 @@ def query_processes(rdfox, model_uri):
     return [
         (
             k,
-            _group_to_recipe_list(v, PROBS["produces"]),
-            _group_to_recipe_list(v, PROBS["consumes"]),
+            _group_to_recipe_list(v, PROBS_RECIPE["produces"]),
+            _group_to_recipe_list(v, PROBS_RECIPE["consumes"]),
         )
         for k, v in grouped
     ]
@@ -186,7 +186,7 @@ def strip_uri(uri):
     return str(uri).rpartition("/")[2]
 
 
-from imperative_model import Process, Object, define_symbols
+from .imperative_model import Process, Object, define_symbols
 
 def query_model_from_endpoint(rdfox, model_uri, **kwargs):
     """Query to find object types, recipe builders and observations."""

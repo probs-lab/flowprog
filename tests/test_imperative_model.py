@@ -2,7 +2,7 @@
 
 import pytest
 
-from imperative_model import *
+from mass_flow_model.imperative_model import *
 
 
 class TestSimpleChain:
@@ -63,16 +63,23 @@ class TestTwoProducersAllocateBackwards:
             Process("M1", produces=["out"], consumes=["in1"]),
             Process("M2", produces=["out"], consumes=["in2"]),
         ]
-        objects = [Object("in1"), Object("in2"), Object("out", allocate_backwards=True)]
+        objects = [Object("in1"), Object("in2"), Object("out")]
         m = define_symbols(processes, objects)
         return ModelBuilder(m)
 
     def test_pull_last_object_production(self, builder):
-        a = sy.Symbol("a")
-        builder.pull_production("out", a)
+        d = sy.Symbol("d")
+        a1 = sy.Symbol("a1")
+        a2 = sy.Symbol("a2")
+        builder.pull_production("out", d, allocate_backwards={
+            "out": {
+                "M1": a1,
+                "M2": a2,
+            }
+        })
         m = builder.m
-        assert m.X[0].value == a * m.alpha[2, 0] / m.S[2, 0]
-        assert m.X[1].value == a * m.alpha[2, 1] / m.S[2, 1]
+        assert m.X[0].value == d * a1 / m.S[2, 0]
+        assert m.X[1].value == d * a2 / m.S[2, 1]
         # assert m.X == m.Y
 
 
@@ -101,7 +108,7 @@ class TestBalanceObject:
         assert m.X[1].value == None
         assert m.X[2].value == a / m.S[3, 2]
 
-        builder.balance_object("mid", [], ["M2"])
+        builder.balance_production("mid", "M2")
 
         assert m.X[0].value == b / m.U[0, 0]
         assert m.X[1].value == sy.Max(0, a / m.S[3, 2] * m.U[2, 2] - b / m.U[0, 0] * m.S[2, 0]) / m.S[2, 1]

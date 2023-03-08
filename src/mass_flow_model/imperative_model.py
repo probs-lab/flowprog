@@ -371,6 +371,11 @@ class ModelBuilder:
                 _log.debug("push_process_input: reached %s, stopping", obj)
                 continue
             i = self._lookup_object(obj)
+            _log.debug("push_process_input: object %s", self.m.objects[i])
+            # XXX should this check be in push_consumption?
+            if not self.m.objects[i].has_market:
+                _log.debug("push_process_input: reached object without market %s, stopping", obj)
+                continue
             production = activity * self.m.S[i, j]
             self.push_consumption(obj, production, until_objects=until_objects)
 

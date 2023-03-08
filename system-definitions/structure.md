@@ -205,5 +205,51 @@ produces: |
 Copied from UK FIRES (unchanged).
 ````
 
+````{system:process} ProducingAmmoniumNitrate
+---
+consumes: |
+  Ammonia                                  = 0.22 kg
+  NitricAcid                               = 0.80 kg {comment: 'nitric acid(HNO3)'}
+produces: |
+  AmmoniumNitrate                          = 1.0 kg
+  WasteOtherChemicals                      = 0.02 kg {comment: 'nitric acid(HNO3)'}
+---
+Copied from UK FIRES (unchanged).
+````
+
+```{system:process} ProducingNitricAcid
+---
+consumes: |
+  Ammonia                                  = 0.34 kg
+  PureOxygen                               = 1.28 kg
+  Water                                    = 0.18 kg
+produces: |
+  NitricAcid                               = 1.26 kg
+  Water                                    = 0.54 kg
+---
+
+Copied from UK FIRES -- but the recipe is not balanced FIXME
+
+FIXME doesn't include N2O emissions.
+```
+
 ```{system:object} Urea
+```
+
+```{system:object} AmmoniumNitrate
+```
+
+```{system:object} NitricAcid
+```
+
+
+## Balancing processes
+
+```{system:process} ExtractCO2FromAtmosphere
+---
+consumes: |
+  AtmoshericCO2                            = 1.00 kg
+produces: |
+  CO2                                      = 1.00 kg
+---
 ```

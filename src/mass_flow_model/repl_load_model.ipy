@@ -15,14 +15,17 @@ MODEL_NS = Namespace("http://c-thru.org/analyses/calculator/model/")
 model_uri = MODEL_NS["Model"]
 
 with probs_endpoint([rdf_data_path, model_def_path]) as rdfox:
-    model, recipe_data = query_model_from_endpoint(rdfox, model_uri, allocate_backwards=["Hydrogen"])
+    model, recipe_data = query_model_from_endpoint(rdfox, model_uri)
 
-demand_urea = sy.Symbol("Z_1")
+demand_symbols = {
+    "Urea": sy.Symbol("Z_1"),
+    "AmmoniumNitrate": sy.Symbol("Z_2"),
+}
 h2_coal_fraction = sy.Symbol("a_1")
 
 builder = ModelBuilder(model)
 builder.pull_production(
-    "Urea", demand_urea, until_objects=["Water", "CO2"],
+    "Urea", demand_symbols["Urea"], until_objects=["CO2"],
     allocate_backwards={
         "Hydrogen": {
             "HydrogenSynthesisFromCoal": h2_coal_fraction,
@@ -30,7 +33,15 @@ builder.pull_production(
         },
     }
 )
-builder.fill_blanks(fill_value=0.1)
+builder.pull_production(
+    "AmmoniumNitrate", demand_symbols["AmmoniumNitrate"], until_objects=["CO2"],
+    allocate_backwards={
+        "Hydrogen": {
+            "HydrogenSynthesisFromCoal": h2_coal_fraction,
+            "HydrogenSynthesisFromNaturalGas": 1 - h2_coal_fraction,
+        },
+    }
+)
 # builder.pull_production("P2", demand2, until_objects=["PP", "PE"])
 # builder.push_consumption("EOL", eol, until_objects=["Recovered"])
 # builder.balance_production(
@@ -40,7 +51,7 @@ builder.fill_blanks(fill_value=0.1)
 #         ("production", "Recovered"),
 #     ]
 # )
-# builder.balance_production("PE", "SC1")
+builder.balance_production("CO2", "ExtractCO2FromAtmosphere")
 # builder.balance_production("PP", "SC2")
 # builder.balance_consumption(
 #     "Recovered",
@@ -48,6 +59,7 @@ builder.fill_blanks(fill_value=0.1)
 # )
 
 
+builder.fill_blanks(fill_value=0)
 
 # def subs_dict(d, values):
 #     return {k: v.subs(values) for k, v in d.items()}

@@ -5,18 +5,18 @@
 
 model:Model probs:hasProcess
   sys:ProducingUrea,
+  sys:ProducingAmmoniumNitrate,
+  sys:ProducingNitricAcid,
   sys:AmmoniaSynthesis,
   sys:HydrogenSynthesisFromNaturalGas,
-  sys:HydrogenSynthesisFromCoal.
+  sys:HydrogenSynthesisFromCoal,
+  sys:ExtractCO2FromAtmosphere.
 
-model:Model probs:hasObject
-  sys:NaturalGas,
-  sys:Coal,
+model:Model probs:hasMarketForObject
   sys:Syngas,
   sys:Ammonia,
   sys:CO2,
   sys:Hydrogen,
-  sys:Nitrogen,
+  sys:NitricAcid,
   sys:Urea,
-  sys:Water,
-  sys:OtherIndustrialGases .
+  sys:AmmoniumNitrate .

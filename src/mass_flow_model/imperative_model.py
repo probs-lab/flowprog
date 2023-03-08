@@ -19,8 +19,7 @@ class Process:
 @dataclass
 class Object:
     id: str
-    allocate_forwards: bool = False
-    allocate_backwards: bool = False
+    has_market: bool = False
 
 
 @dataclass
@@ -40,8 +39,8 @@ class Model:
     # Delta: list[sy.Expr]
     S: dict[tuple[int, int], sy.Expr]
     U: dict[tuple[int, int], sy.Expr]
-    alpha: dict[tuple[int, int], sy.Expr]
-    beta: dict[tuple[int, int], sy.Expr]
+    # alpha: dict[tuple[int, int], sy.Expr]
+    # beta: dict[tuple[int, int], sy.Expr]
     s: dict[tuple[int, int], sy.Expr]
     u: dict[tuple[int, int], sy.Expr]
 
@@ -122,30 +121,30 @@ def define_symbols(
     if allocate_backwards is None:
         allocate_backwards = []
 
-    # XXX should make the symbols be passed in by user?
-    alpha = {
-        (i, j): sy.Symbol(f"alpha_{i}{j}")
-        for i in range(N)
-        for j in processes_producing_object.get(i, [])
-        if (
-            len(processes_producing_object.get(i, [])) > 1
-            and (
-                objects[i].allocate_backwards
-                or objects[i].id in allocate_backwards
-            )
-        )
-    }
-    beta = {
-        (i, j): sy.Symbol(f"beta_{i}{j}")
-        for i in range(N)
-        for j in processes_consuming_object.get(i, [])
-        if (
-            len(processes_consuming_object.get(i, [])) > 1
-            and objects[i].allocate_forwards
-        )
-    }
+    # # XXX should make the symbols be passed in by user?
+    # alpha = {
+    #     (i, j): sy.Symbol(f"alpha_{i}{j}")
+    #     for i in range(N)
+    #     for j in processes_producing_object.get(i, [])
+    #     if (
+    #         len(processes_producing_object.get(i, [])) > 1
+    #         and (
+    #             objects[i].allocate_backwards
+    #             or objects[i].id in allocate_backwards
+    #         )
+    #     )
+    # }
+    # beta = {
+    #     (i, j): sy.Symbol(f"beta_{i}{j}")
+    #     for i in range(N)
+    #     for j in processes_consuming_object.get(i, [])
+    #     if (
+    #         len(processes_consuming_object.get(i, [])) > 1
+    #         and objects[i].allocate_forwards
+    #     )
+    # }
 
-    return Model(processes, objects, X, Y, Z, S, U, alpha, beta, s, u)
+    return Model(processes, objects, X, Y, Z, S, U, s, u)
 
 
 class ModelBuilder:
@@ -243,6 +242,9 @@ class ModelBuilder:
                     until_objects=until_objects,
                     allocate_backwards=allocate_backwards,
                 )
+        else:
+            raise ValueError(f"No processes produce {object_id}")
+
 
     def push_consumption(self, object_id: str, consumption_value, until_objects=None):
         """Push consumption value forwards through the model until `until_objects`."""
@@ -277,6 +279,8 @@ class ModelBuilder:
                     output,
                     until_objects=until_objects,
                 )
+        else:
+            raise ValueError(f"No processes consume {object_id}")
 
     def pull_process_output(
         self, process_id: str, object_id: str, value, until_objects=None,
@@ -306,11 +310,13 @@ class ModelBuilder:
             f"set output of {object_id} from {process_id} = {value}",
         )
 
-        if not self.m.processes[j].has_stock and self.m.X[j].value != self.m.Y[j].value:
-            # Link to process input side
+        # XXX did have condition  and self.m.X[j].value != self.m.Y[j].value:
+        if not self.m.processes[j].has_stock:
+            # Link to process input side NOTE activity is added -- so we don't
+            # set X=Y here (that would be another way)
             self._set_value(
                 self.m.X[j],
-                self.m.Y[j].value,
+                activity,
                 f"set output of {object_id} from {process_id} = {value}",
             )
 
@@ -323,6 +329,11 @@ class ModelBuilder:
                 _log.debug("pull_process_output: reached %s, stopping", obj)
                 continue
             i = self._lookup_object(obj)
+            _log.debug("pull_process_output: object %s", self.m.objects[i])
+            # XXX should this check be in pull_production?
+            if not self.m.objects[i].has_market:
+                _log.debug("pull_process_output: reached object without market %s, stopping", obj)
+                continue
             production = activity * self.m.U[i, j]
             self.pull_production(obj, production, until_objects=until_objects,
                                  allocate_backwards=allocate_backwards)
@@ -344,9 +355,12 @@ class ModelBuilder:
 
         self._set_value(self.m.X[j], activity, history)
 
-        if not self.m.processes[j].has_stock and self.m.X[j].value != self.m.Y[j].value:
+        # XXX did have extra condition:  and self.m.X[j].value != self.m.Y[j].value:
+        if not self.m.processes[j].has_stock:
             # Link to process output side
-            self._set_value(self.m.Y[j], self.m.X[j].value, history)
+            # NOTE activity is added -- so we don't
+            # set X=Y here (that would be another way)
+            self._set_value(self.m.Y[j], activity, history)
 
         # Push through model
         _log.debug(

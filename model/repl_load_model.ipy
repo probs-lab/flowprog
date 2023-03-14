@@ -68,3 +68,14 @@ builder.fill_blanks(fill_value=0)
 def solution_to_flows(m, values):
     all_values = {**recipe_data, **values}
     return m.to_flows(all_values)
+
+
+flows_sym = model.to_flows(recipe_data)
+
+post = {
+    "NG demand": flows_sym.query("source == 'NaturalGas'")["value"].sum(),
+}
+
+# emissions = {
+#     "Urea": flows_sym.
+# }

@@ -84,111 +84,11 @@ and Nitrogen, not Syngas.
 ```{end-sub-processes}
 ```
 
-```{system:object} PrimaryChemicals
-:label: Primary chemicals
-:become_parent: true
-```
-
-```{system:object} Ethylene
-```
-
-```{system:object} Propylene
-```
-
-```{system:object} Benzene
-```
-
-```{system:object} Toluene
-```
-
-```{system:object} Xylenes
-```
-
-```{system:object} Butylenes
-```
-
-```{system:object} Butadiene
-```
-
-```{system:object} Ammonia
-```
-
-```{system:object} CarbonBlack
-:label: Carbon black
-```
-
-```{system:object} MethylAlcohol
-:label: Methyl alcohol
-```
-
-```{system:object} Syngas
-```
-
-```{end-sub-objects}
-```
-
-```{system:object} FossilFuels
-:become_parent: true
-:label: Fossil fuels
-```
-
-```{system:object} Oil
-```
-
-```{system:object} Coal
-```
-
-```{system:object} NaturalGas
-:label: Natural gas
-```
-
-```{end-sub-objects}
-```
-
-```{system:object} RefineryProducts
-:label: Refinery products
-:become_parent: true
-```
-
-```{system:object} Propane
-```
-
-```{system:object} Ethane
-```
-
-```{system:object} Butane
-```
-
-```{system:object} Naphtha
-```
-
-```{system:object} MiscRefineryProducts
-:label: Misc. refinery products
-```
-
-```{system:object} OilBitumen
-:label: Oil bitumen
-```
-
-```{end-sub-objects}
-```
-
 ### Misc objects
 
 ```{system:object} CO2
-```
 
-```{system:object} Nitrogen
-```
-
-```{system:object} Hydrogen
-```
-
-```{system:object} Water
-```
-
-```{system:object} OtherIndustrialGases
-:label: Other industrial gases
+CO2 in a pure stream that can be re-used in other processes, as opposed to `AtmosphericCO2`.
 ```
 
 Fertilliser production
@@ -234,15 +134,6 @@ produces: |
 Copied from UK FIRES -- but the recipe is not balanced FIXME
 
 FIXME doesn't include N2O emissions.
-```
-
-```{system:object} Urea
-```
-
-```{system:object} AmmoniumNitrate
-```
-
-```{system:object} NitricAcid
 ```
 
 

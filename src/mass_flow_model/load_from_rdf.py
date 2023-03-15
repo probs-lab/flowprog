@@ -35,7 +35,7 @@ def query_processes(rdfox, model_uri):
                 FILTER( ?producesOrConsumes = recipe:produces || ?producesOrConsumes = recipe:consumes )
             }
         }
-        ORDER BY ?process
+        ORDER BY ?process ?producesOrConsumes ?recipeObject ?recipeQuantity ?recipeMetric
         """,
         initBindings={"model": model_uri},
         initNs=NAMESPACES,
@@ -195,7 +195,6 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs):
     recipe_builders = get_recipe_builders(rdfox, model_uri)
 
     objects_in_recipes = get_objects_from_recipes(recipe_builders)
-    print("obj", objects_in_recipes)
 
     log.info("Loading object types...")
     object_types = get_object_types(rdfox, model_uri, objects_in_recipes)

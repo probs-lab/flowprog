@@ -136,13 +136,25 @@ Copied from UK FIRES -- but the recipe is not balanced FIXME
 FIXME doesn't include N2O emissions.
 ```
 
+# Use of fertilisers
+
+```{system:process} UseOfUreaFertiliser
+---
+consumes: |
+  ukf:Urea                                     = 1.00 kg
+produces: |
+  ukf:AtmosphericCO2                           = 1.00 kg
+---
+
+FIXME: illustrative recipe!
+```
 
 ## Balancing processes
 
 ```{system:process} ExtractCO2FromAtmosphere
 ---
 consumes: |
-  ukf:AtmoshericCO2                            = 1.00 kg
+  ukf:AtmosphericCO2                           = 1.00 kg
 produces: |
   CO2                                      = 1.00 kg
 ---

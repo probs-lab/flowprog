@@ -18,6 +18,7 @@ model:Model probs:hasProcess
   sys:AmmoniaSynthesis,     # different inputs
   sys:HydrogenSynthesisFromNaturalGas,
   sys:HydrogenSynthesisFromCoal,
+  sys:UseOfUreaFertiliser,
   sys:ExtractCO2FromAtmosphere.
 
 model:Model probs:hasMarketForObject

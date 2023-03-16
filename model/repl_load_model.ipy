@@ -59,6 +59,7 @@ builder.balance_production("CO2", "ExtractCO2FromAtmosphere")
 #     "Disposal",
 # )
 
+builder.balance_consumption("Urea", "UseOfUreaFertiliser")
 
 builder.fill_blanks(fill_value=0)
 
@@ -74,6 +75,7 @@ flows_sym = model.to_flows(recipe_data)
 
 post = {
     "NG demand": flows_sym.query("source == 'NaturalGas'")["value"].sum(),
+    "CO2": flows_sym.query("target == 'AtmosphericCO2'")["value"].sum(),
 }
 
 # emissions = {

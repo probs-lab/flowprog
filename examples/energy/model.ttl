@@ -1,0 +1,23 @@
+
+# This file defines which processes should be included in the calculator model,
+# and which objects should be given "markets" (i.e. mass balanced).
+#
+# Objects that occur in the process recipes but which don't have "markets" are
+# like elementary flows in LCA -- they can come and go, but a process consuming
+# them doesn't have any knock-on implications for other processes in the model.
+
+@prefix model: <http://c-thru.org/analyses/calculator/model/> .
+@prefix sys: <http://c-thru.org/analyses/calculator/system/> .
+@prefix probs: <https://ukfires.org/probs/ontology/> .
+
+model:Model probs:hasProcess
+  sys:CCGT,
+  sys:WindTurbine,
+  sys:HydrogenElectrolysis,
+  sys:SteelProductionEAF,
+  sys:SteelProductionH2DRI,
+  sys:ElectricCarUse.
+
+model:Model probs:hasMarketForObject
+  sys:Electricity,
+  sys:Hydrogen.

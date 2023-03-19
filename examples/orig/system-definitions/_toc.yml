@@ -1,0 +1,6 @@
+format: jb-book
+root: intro
+options:
+  caption: System structure
+chapters:
+- file: structure

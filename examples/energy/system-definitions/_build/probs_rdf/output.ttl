@@ -1,0 +1,108 @@
+@prefix probs: <https://ukfires.org/probs/ontology/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rec: <https://ukfires.org/probs/ontology/recipe/> .
+@prefix sys: <http://c-thru.org/analyses/calculator/system/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+sys:ElectricityGeneration a probs:Process ;
+    rdfs:label "ElectricityGeneration" ;
+    probs:consumes sys:Fuels ;
+    probs:processComposedOf sys:CCGT,
+        sys:WindTurbine ;
+    probs:processName "ElectricityGeneration" ;
+    probs:produces sys:Electricity .
+
+sys:ElectricityUse a probs:Process ;
+    rdfs:label "ElectricityUse" ;
+    probs:consumes sys:Electricity,
+        sys:Hydrogen ;
+    probs:processComposedOf sys:ElectricCarUse,
+        sys:SteelProductionEAF,
+        sys:SteelProductionH2DRI ;
+    probs:processName "ElectricityUse" ;
+    probs:produces sys:Steel .
+
+sys:HydrogenElectrolysis a probs:Process ;
+    rdfs:label "Hydrogen electrolysis" ;
+    probs:consumes sys:Electricity ;
+    probs:processName "Hydrogen electrolysis" ;
+    probs:produces sys:Hydrogen ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Electricity ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Hydrogen ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:CCGT a probs:Process ;
+    rdfs:label "CCGT" ;
+    probs:consumes sys:NaturalGas ;
+    probs:processName "CCGT" ;
+    probs:produces sys:Electricity ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:NaturalGas ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Electricity ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:ElectricCarUse a probs:Process ;
+    rdfs:label "Electric car use" ;
+    probs:consumes sys:Electricity ;
+    probs:processName "Electric car use" ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Electricity ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:SteelProductionEAF a probs:Process ;
+    rdfs:label "Steel EAF" ;
+    probs:consumes sys:Electricity ;
+    probs:processName "Steel EAF" ;
+    probs:produces sys:Steel ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Electricity ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Steel ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:SteelProductionH2DRI a probs:Process ;
+    rdfs:label "Steel DRI from H2" ;
+    probs:consumes sys:Hydrogen ;
+    probs:processName "Steel DRI from H2" ;
+    probs:produces sys:Steel ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Hydrogen ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Steel ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:WindTurbine a probs:Process ;
+    rdfs:label "Wind turbine" ;
+    probs:processName "Wind turbine" ;
+    probs:produces sys:Electricity ;
+    rec:hasRecipe [ rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:Electricity ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:NaturalGas a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "NaturalGas" ;
+    probs:objectName "NaturalGas" .
+
+sys:Hydrogen a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Hydrogen" ;
+    probs:objectName "Hydrogen" .
+
+sys:Steel a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Steel" ;
+    probs:objectName "Steel" .
+
+sys:Electricity a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "Electricity" ;
+    probs:objectName "Electricity" .
+

@@ -2,8 +2,8 @@
 %autoreload 2
 
 import pandas as pd
-from mass_flow_model.imperative_model import *
-from mass_flow_model.load_from_rdf import *
+from flowprog.imperative_model import *
+from flowprog.load_from_rdf import *
 
 from rdflib import Namespace
 from probs_runner import probs_endpoint

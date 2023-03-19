@@ -186,7 +186,7 @@ def strip_uri(uri):
     return str(uri).rpartition("/")[2]
 
 
-from .imperative_model import Process, Object, define_symbols
+from .imperative_model import Process, Object, Model
 
 def query_model_from_endpoint(rdfox, model_uri, **kwargs):
     """Query to find object types, recipe builders and observations."""
@@ -226,7 +226,7 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs):
         for x in object_types
     ]
 
-    model = define_symbols(processes, objects, **kwargs)
+    model = Model(processes, objects, **kwargs)
 
     recipe_data = {}
     process_idx = {p.id: j for j, p in enumerate(model.processes)}

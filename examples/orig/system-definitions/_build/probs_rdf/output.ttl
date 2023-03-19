@@ -1,0 +1,178 @@
+@prefix probs: <https://ukfires.org/probs/ontology/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rec: <https://ukfires.org/probs/ontology/recipe/> .
+@prefix sys: <http://c-thru.org/analyses/calculator/system/> .
+@prefix ukf: <http://ukfires.org/probs/system/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+sys:ExtractCO2FromAtmosphere a probs:Process ;
+    rdfs:label "ExtractCO2FromAtmosphere" ;
+    probs:consumes ukf:AtmosphericCO2 ;
+    probs:processName "ExtractCO2FromAtmosphere" ;
+    probs:produces sys:CO2 ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:AtmosphericCO2 ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:CO2 ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:PrimaryChemicalsProduction a probs:Process ;
+    rdfs:label "Primary chemicals production" ;
+    probs:consumes sys:NaturalGas,
+        sys:RefineryProducts ;
+    probs:processComposedOf sys:AmmoniaSynthesis,
+        sys:HydrogenSynthesis ;
+    probs:processName "Primary chemicals production" ;
+    probs:produces sys:NaturalGas,
+        sys:PrimaryChemicals .
+
+sys:ProducingAmmoniumNitrate a probs:Process ;
+    rdfs:label "ProducingAmmoniumNitrate" ;
+    probs:consumes ukf:Ammonia,
+        ukf:NitricAcid ;
+    probs:processName "ProducingAmmoniumNitrate" ;
+    probs:produces ukf:AmmoniumNitrate,
+        ukf:WasteOtherChemicals ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Ammonia ;
+                    rec:quantity 2.2e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:NitricAcid ;
+                    rec:quantity 8e-01 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:WasteOtherChemicals ;
+                    rec:quantity 2e-02 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:AmmoniumNitrate ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:ProducingNitricAcid a probs:Process ;
+    rdfs:label "ProducingNitricAcid" ;
+    probs:consumes ukf:Ammonia,
+        ukf:PureOxygen,
+        ukf:Water ;
+    probs:processName "ProducingNitricAcid" ;
+    probs:produces ukf:NitricAcid,
+        ukf:Water ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:PureOxygen ;
+                    rec:quantity 1.28e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Ammonia ;
+                    rec:quantity 3.4e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Water ;
+                    rec:quantity 1.8e-01 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Water ;
+                    rec:quantity 5.4e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:NitricAcid ;
+                    rec:quantity 1.26e+00 ] ] .
+
+sys:ProducingUrea a probs:Process ;
+    rdfs:label "ProducingUrea" ;
+    probs:consumes sys:CO2,
+        ukf:Ammonia ;
+    probs:processName "ProducingUrea" ;
+    probs:produces ukf:OtherIndustrialGases,
+        ukf:Urea,
+        ukf:Water ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object sys:CO2 ;
+                    rec:quantity 7.5e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Ammonia ;
+                    rec:quantity 5.8e-01 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Water ;
+                    rec:quantity 3e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Urea ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:OtherIndustrialGases ;
+                    rec:quantity 3e-02 ] ] .
+
+sys:UseOfUreaFertiliser a probs:Process ;
+    rdfs:label "UseOfUreaFertiliser" ;
+    probs:consumes ukf:Urea ;
+    probs:processName "UseOfUreaFertiliser" ;
+    probs:produces ukf:AtmosphericCO2 ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Urea ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:AtmosphericCO2 ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:AmmoniaSynthesis a probs:Process ;
+    rdfs:label "AmmoniaSynthesis" ;
+    probs:consumes ukf:Hydrogen,
+        ukf:Nitrogen ;
+    probs:processName "AmmoniaSynthesis" ;
+    probs:produces ukf:Ammonia ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Nitrogen ;
+                    rec:quantity 5e-01 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Hydrogen ;
+                    rec:quantity 5e-01 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Ammonia ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:HydrogenSynthesis a probs:Process ;
+    rdfs:label "Hydrogen synthesis" ;
+    probs:consumes sys:FossilFuels ;
+    probs:processComposedOf sys:HydrogenSynthesisFromCoal,
+        sys:HydrogenSynthesisFromNaturalGas ;
+    probs:processName "Hydrogen synthesis" ;
+    probs:produces sys:Hydrogen .
+
+sys:HydrogenSynthesisFromCoal a probs:Process ;
+    rdfs:label "Hydrogen synthesis from coal" ;
+    probs:consumes ukf:Coal,
+        ukf:Water ;
+    probs:processName "Hydrogen synthesis from coal" ;
+    probs:produces ukf:CO2,
+        ukf:Hydrogen ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Coal ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Water ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Hydrogen ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:CO2 ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:HydrogenSynthesisFromNaturalGas a probs:Process ;
+    rdfs:label "Hydrogen synthesis from natural gas" ;
+    probs:consumes ukf:NaturalGas,
+        ukf:Water ;
+    probs:processName "Hydrogen synthesis from natural gas" ;
+    probs:produces ukf:CO2,
+        ukf:Hydrogen ;
+    rec:hasRecipe [ rec:consumes [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:NaturalGas ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Water ;
+                    rec:quantity 1e+00 ] ;
+            rec:produces [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:CO2 ;
+                    rec:quantity 1e+00 ],
+                [ rec:metric <http://qudt.org/vocab/quantitykind/Mass> ;
+                    rec:object ukf:Hydrogen ;
+                    rec:quantity 1e+00 ] ] .
+
+sys:CO2 a probs:Object,
+        probs:ReferenceObject ;
+    rdfs:label "CO2" ;
+    probs:objectName "CO2" .
+

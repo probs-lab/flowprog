@@ -1,6 +1,7 @@
 from typing import Iterable, Optional
 from collections import Counter
 from dataclasses import dataclass, field
+from rdflib import URIRef
 import sympy as sy
 from sympy import S
 import pandas as pd
@@ -21,6 +22,7 @@ class Process:
 @dataclass
 class Object:
     id: str
+    metric: URIRef
     has_market: bool = False
 
 
@@ -418,6 +420,7 @@ class Model:
                             self.processes[j].id,
                             self.objects[ii].id,
                             self.objects[ii].id,
+                            self.objects[ii].metric,
                             (self[Y] * S).subs(values),
                         )
                     )
@@ -429,9 +432,8 @@ class Model:
                             self.objects[ii].id,
                             self.processes[j].id,
                             self.objects[ii].id,
+                            self.objects[ii].metric,
                             (self[X] * U).subs(values),
                         )
                     )
-        return pd.DataFrame(rows, columns=["source", "target", "material", "value"])
-
-
+        return pd.DataFrame(rows, columns=["source", "target", "material", "metric", "value"])

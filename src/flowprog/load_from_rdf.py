@@ -5,11 +5,11 @@ log = logging.getLogger(__name__)
 
 from itertools import groupby
 from rdflib import Namespace
-from probs_runner import PROBS
 
 
 PROBS_SYS = Namespace("http://ukfires.org/probs/system/")
 PROBS_RECIPE = Namespace("https://ukfires.org/probs/ontology/recipe/")
+PROBS = Namespace("https://ukfires.org/probs/ontology/")
 SYS = Namespace("http://c-thru.org/analyses/calculator/system/")
 QUANTITYKIND = Namespace("http://qudt.org/vocab/quantitykind/")
 
@@ -22,11 +22,11 @@ NAMESPACES = {
 
 
 def query_processes(rdfox, model_uri):
-    results = rdfox.query_records(
+    results = rdfox.query(
         """
         SELECT ?process ?producesOrConsumes ?recipeObject ?recipeQuantity ?recipeMetric
         WHERE {
-            ?model :hasProcess ?process .
+            ?model probs:hasProcess ?process .
             OPTIONAL {
                 ?process recipe:hasRecipe ?recipe .
                 ?recipe ?producesOrConsumes [ recipe:object ?recipeObject ;
@@ -67,22 +67,12 @@ def query_processes(rdfox, model_uri):
     ]
 
 
-RECIPE_METRIC_UNITS = {
-    QUANTITYKIND.Mass: "kg",
-    QUANTITYKIND.Area: "m2",
-    QUANTITYKIND.Volume: "m3",
-    QUANTITYKIND.Dimensionless: "-",
-}
-
-
 def _recipe_items_to_tuples(items):
     for x in items:
-        if x["metric"] not in RECIPE_METRIC_UNITS:
-            raise ValueError(f"unsupported metric {x['metric']} in recipe")
         assert x["quantity"] is not None, "missing value"
 
     tuples = [
-        (x["object"], RECIPE_METRIC_UNITS[x["metric"]], float(x["quantity"]))
+        (x["object"], x["metric"], float(x["quantity"]))
         for x in items
     ]
     return tuples
@@ -123,13 +113,12 @@ def get_recipe_builders(rdfox, model_uri):
 
 def query_object_types(rdfox, model_uri, object_types):
     query = """
-    SELECT ?object ?units ?scale ?isTraded ?hasMarket
+    SELECT ?object ?metric ?isTraded ?hasMarket
     WHERE {
-        ?object a :Object .
-        OPTIONAL { ?model :hasMarketForObject ?object . BIND(TRUE as ?hasMarket) . }
-        OPTIONAL { ?object :objectUnits ?units . }
-        OPTIONAL { ?object :objectScale ?scale . }
-        OPTIONAL { ?object :objectIsTraded ?isTraded . }
+        ?object a probs:Object .
+        OPTIONAL { ?model probs:hasMarketForObject ?object . BIND(TRUE as ?hasMarket) . }
+        OPTIONAL { ?object probs:objectMetric ?metric . }
+        OPTIONAL { ?object probs:objectIsTraded ?isTraded . }
     }
     ORDER BY ?object
     """
@@ -145,7 +134,7 @@ def query_object_types(rdfox, model_uri, object_types):
         ),
     )
 
-    results = rdfox.query_records(
+    results = rdfox.query(
         query,
         # initBindings={
         #     "model": model_uri,
@@ -204,16 +193,17 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs):
     processes = [
         Process(
             id=strip_uri(k),
-            produces=[strip_uri(x) for x, units, value in produces],
-            consumes=[strip_uri(x) for x, units, value in consumes],
+            produces=[strip_uri(x) for x, metric, value in produces],
+            consumes=[strip_uri(x) for x, metric, value in consumes],
         )
         for k, consumes, produces in recipe_builders
     ]
 
+    # XXX can neaten this up with better treatment of prefixes/uris
     recipes = {
         strip_uri(k): (
-            {strip_uri(x): value for x, units, value in consumes},
-            {strip_uri(x): value for x, units, value in produces},
+            {strip_uri(x): (metric, value) for x, metric, value in consumes},
+            {strip_uri(x): (metric, value) for x, metric, value in produces},
         )
         for k, consumes, produces in recipe_builders
     }
@@ -221,6 +211,7 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs):
     objects = [
         Object(
             id=strip_uri(x["object"]),
+            metric=x["metric"] or QUANTITYKIND.Mass,
             has_market=bool(x["hasMarket"]),
         )
         for x in object_types
@@ -235,10 +226,18 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs):
         j = process_idx[p.id]
         if p.id in recipes:
             consumes, produces = recipes[p.id]
-            for obj, value in consumes.items():
-                recipe_data[model.U[object_idx[obj], j]] = value
-            for obj, value in produces.items():
-                recipe_data[model.S[object_idx[obj], j]] = value
+            for obj, (metric, value) in consumes.items():
+                i = object_idx[obj]
+                expected_metric = objects[i].metric
+                if metric != expected_metric:
+                    raise ValueError("Expected metric %r for %r but got %r" % (str(expected_metric), str(obj), str(metric)))
+                recipe_data[model.U[i, j]] = value
+            for obj, (metric, value) in produces.items():
+                i = object_idx[obj]
+                expected_metric = objects[i].metric
+                if metric != expected_metric:
+                    raise ValueError("Expected metric %r for %r but got %r" % (str(expected_metric), str(obj), str(metric)))
+                recipe_data[model.S[i, j]] = value
         else:
             raise ValueError("No recipe for %s" % p)
 

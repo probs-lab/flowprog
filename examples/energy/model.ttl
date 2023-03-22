@@ -9,6 +9,7 @@
 @prefix model: <http://c-thru.org/analyses/calculator/model/> .
 @prefix sys: <http://c-thru.org/analyses/calculator/system/> .
 @prefix probs: <https://ukfires.org/probs/ontology/> .
+@prefix quantitykind: <http://qudt.org/vocab/quantitykind/> .
 
 model:Model probs:hasProcess
   sys:CCGT,
@@ -21,3 +22,8 @@ model:Model probs:hasProcess
 model:Model probs:hasMarketForObject
   sys:Electricity,
   sys:Hydrogen.
+
+
+# This should be part of the object definition
+sys:Electricity probs:objectMetric quantitykind:Energy .
+sys:TransportService probs:objectMetric <http://c-thru.org/analyses/calculator/metrics/PassengerKM> .

@@ -25,7 +25,7 @@ label: CCGT
 consumes: |
   NaturalGas                               = 1.0 kg
 produces: |
-  Electricity                              = 1.0 kg
+  Electricity                              = 2.3 kWh
 ---
 
 TODO: made up recipe
@@ -36,7 +36,7 @@ TODO: made up recipe
 label: Wind turbine
 consumes: |
 produces: |
-  Electricity                              = 1.0 kg
+  Electricity                              = 1.0 kWh
 ---
 
 TODO: made up recipe
@@ -58,7 +58,7 @@ TODO: made up recipe
 ---
 label: Hydrogen electrolysis
 consumes: |
-  Electricity                              = 1.0 kg
+  Electricity                              = 1.3 kWh
 produces: |
   Hydrogen                                 = 1.0 kg
 ---
@@ -83,7 +83,7 @@ TODO: made up recipe
 ---
 label: Steel EAF
 consumes: |
-  Electricity                              = 1.0 kg
+  Electricity                              = 5.6 kWh
 produces: |
   Steel                                    = 1.0 kg
 ---
@@ -95,7 +95,7 @@ TODO: made up recipe
 ---
 label: Steel DRI from H2
 consumes: |
-  Hydrogen                                 = 1.0 kg
+  Hydrogen                                 = 2.2 kg
 produces: |
   Steel                                    = 1.0 kg
 ---
@@ -107,8 +107,9 @@ TODO: made up recipe
 ---
 label: Electric car use
 consumes: |
-  Electricity                              = 1.0 kg
+  Electricity                              = 2.3 kWh
 produces: |
+  TransportService                         = 1.0 pkm
 ---
 
 TODO: made up recipe
@@ -121,4 +122,7 @@ TODO: made up recipe
 ## Object definitions
 
 ```{system:object} Steel
+```
+
+```{system:object} TransportService
 ```

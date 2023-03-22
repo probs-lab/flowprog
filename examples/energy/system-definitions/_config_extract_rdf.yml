@@ -3,6 +3,9 @@ sphinx:
     - sphinx_probs_rdf
   config:
     probs_rdf_system_prefix: "http://c-thru.org/analyses/calculator/system/"
+    probs_rdf_units:
+      kWh: [1, Energy]
+      pkm: [1, <http://c-thru.org/analyses/calculator/metrics/PassengerKM>]
 
 execute:
   execute_notebooks: "off"

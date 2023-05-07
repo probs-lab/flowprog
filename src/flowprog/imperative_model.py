@@ -181,11 +181,14 @@ class Model:
         else:
             raise ValueError(f"No processes produce {object_id}")
 
-    def push_consumption(self, object_id: str, consumption_value, until_objects=None):
+    def push_consumption(self, object_id: str, consumption_value, until_objects=None,
+                         allocate_forwards=None):
         """Push consumption value forwards through the model until `until_objects`."""
 
         if until_objects is None:
             until_objects = set()
+        if allocate_forwards is None:
+            allocate_forwards = {}
 
         # Add the current object to `until_objects`, to avoid infinite loops
         until_objects = set(until_objects) | {object_id}
@@ -195,7 +198,6 @@ class Model:
             "push_consumption: consumption of %s = %s", object_id, consumption_value
         )
         i = self._lookup_object(object_id)
-        # self._set_value(self.m.Z[i], consumption_value, f"set production of {object_id} = {consumption_value}")
 
         # Push through model
         processes = self._processes_consuming_object.get(i, [])
@@ -206,19 +208,34 @@ class Model:
                 object_id,
                 consumption_value,
                 until_objects=until_objects,
+                allocate_forwards=allocate_forwards,
             )
         elif len(processes) > 1:
+            if object_id not in allocate_forwards:
+                raise ValueError(
+                    "Forwards allocation coefficient not defined for %s -> {%s}" %
+                    (object_id, ", ".join(self.processes[j].id for j in processes))
+                )
+            betas = allocate_forwards[object_id]
             # allocate
             result = Counter()
             for j in processes:
-                output = consumption_value * self.beta[i, j]
+                pid = self.processes[j].id
+                if pid not in betas:
+                    raise ValueError(
+                        "Forwards allocation coefficient not defined for %s -> %s" %
+                        (object_id, pid)
+                    )
+                beta = betas[pid]
+                # TODO : clip to [0, 1]?
+                output = consumption_value * beta
                 this_result = self.push_process_input(
                     self.processes[j].id,
                     object_id,
                     output,
                     until_objects=until_objects,
+                    allocate_forwards=allocate_forwards,
                 )
-                # merge sum
                 result.update(this_result)
             return result
         else:
@@ -283,19 +300,26 @@ class Model:
         return result
 
     def push_process_input(
-        self, process_id: str, object_id: str, value, until_objects=None
+        self, process_id: str, object_id: str, value, until_objects=None,
+        allocate_forwards=None,
     ):
         """Specify process input forwards through the model until `until_objects`."""
 
         if until_objects is None:
             until_objects = set()
+        if allocate_forwards is None:
+            allocate_forwards = {}
 
         # Add the current object to `until_objects`, to avoid infinite loops
         until_objects = set(until_objects) | {object_id}
 
         # Save this value
-        history = f"set input of {object_id} into {process_id} = {value}"
-        _log.debug("push_process_input: %s", history)
+        _log.debug(
+            "push_process_input: input of %s into %s = %s",
+            object_id,
+            process_id,
+            value,
+        )
         i = self._lookup_object(object_id)
         j = self._lookup_process(process_id)
         activity = value / self.U[i, j]
@@ -326,7 +350,9 @@ class Model:
                 _log.debug("push_process_input: reached object without market %s, stopping", obj)
                 continue
             production = activity * self.S[i, j]
-            more = self.push_consumption(obj, production, until_objects=until_objects)
+            more = self.push_consumption(obj, production, until_objects=until_objects,
+                                         allocate_forwards=allocate_forwards)
+            # merge sum
             result.update(more)
 
         return result

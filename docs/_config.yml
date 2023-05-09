@@ -1,0 +1,30 @@
+# Book settings
+# Learn more at https://jupyterbook.org/customize/config.html
+
+title: flowprog
+author: Rick Lupton
+
+# Sphinx config
+sphinx:
+  extra_extensions:
+   - sphinx.ext.autodoc
+   - sphinx_probs_rdf
+  config:
+    probs_rdf_system_prefix: "http://probs-lab.github.io/flowprog/examples/system/"
+    probs_rdf_units:
+      kWh: [1, Energy]
+      pkm: [1, <http://probs-lab.github.io/flowprog/metrics/PassengerKM>]
+    probs_rdf_extra_prefixes:
+      ukf: "http://ukfires.org/probs/system/"
+
+# Information about where the book exists on the web
+repository:
+  url: https://github.com/probs-lab/flowprog
+  path_to_book: docs
+  branch: master
+
+# Add GitHub buttons to your book
+# See https://jupyterbook.org/customize/config.html#add-a-link-to-your-repository
+# html:
+#   use_issues_button: true
+#   use_repository_button: true

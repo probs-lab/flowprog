@@ -116,7 +116,7 @@ def query_object_types(rdfox, model_uri, object_types):
     SELECT ?object ?metric ?isTraded ?hasMarket
     WHERE {
         ?object a probs:Object .
-        OPTIONAL { ?model probs:hasMarketForObject ?object . BIND(TRUE as ?hasMarket) . }
+        OPTIONAL { ?model probs:hasMarketForObject ?object . BIND(1 as ?hasMarket) . }
         OPTIONAL { ?object probs:objectMetric ?metric . }
         OPTIONAL { ?object probs:objectIsTraded ?isTraded . }
     }

@@ -11,7 +11,11 @@ kernelspec:
   name: python3
 --- 
 
-# Energy production
+# Energy system definitions
+
+The blocks below serve to document the processes and objects that form the example model structure. Their data is exported in RDF form to `_build/html/output.ttl` every time the documentation Jupyter Book is built (note that this means that the books must be built twice when these definitions change, so that the notebook code sees the latest version of the definitions).
+
+## Energy production
 
 ```{system:process} ElectricityGeneration
 :consumes: Fuels
@@ -45,14 +49,14 @@ TODO: made up recipe
 ```{end-sub-processes}
 ```
 
-## Object definitions
+### Object definitions
 
 ```{system:object} NaturalGas
 ```
 ```{system:object} Electricity
 ```
 
-# Hydrogen production
+## Hydrogen production
 
 ```{system:process} HydrogenElectrolysis
 ---
@@ -66,12 +70,12 @@ produces: |
 TODO: made up recipe
 ```
 
-## Object definitions
+### Object definitions
 
 ```{system:object} Hydrogen
 ```
 
-# Energy use
+## Energy use
 
 ```{system:process} ElectricityUse
 :consumes: Electricity Hydrogen
@@ -119,7 +123,7 @@ TODO: made up recipe
 ```
 
 
-## Object definitions
+### Object definitions
 
 ```{system:object} Steel
 ```

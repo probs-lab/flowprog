@@ -6,8 +6,8 @@
 # like elementary flows in LCA -- they can come and go, but a process consuming
 # them doesn't have any knock-on implications for other processes in the model.
 
-@prefix model: <http://c-thru.org/analyses/calculator/model/> .
-@prefix sys: <http://c-thru.org/analyses/calculator/system/> .
+@prefix model: <http://probs-lab.github.io/flowprog/examples/energy-model/> .
+@prefix sys: <http://probs-lab.github.io/flowprog/examples/system/> .
 @prefix probs: <https://ukfires.org/probs/ontology/> .
 @prefix quantitykind: <http://qudt.org/vocab/quantitykind/> .
 
@@ -26,4 +26,4 @@ model:Model probs:hasMarketForObject
 
 # This should be part of the object definition
 sys:Electricity probs:objectMetric quantitykind:Energy .
-sys:TransportService probs:objectMetric <http://c-thru.org/analyses/calculator/metrics/PassengerKM> .
+sys:TransportService probs:objectMetric <http://probs-lab.github.io/flowprog/metrics/PassengerKM> .

@@ -13,6 +13,20 @@ _log = logging.getLogger(__name__)
 
 @dataclass
 class Process:
+    """A Process represents an activity involving input and/or output Objects.
+
+    :param id: Identifier for the process.
+    :param produces: Identifiers of objects that this process produces.
+    :param consumes: Identifiers of objects that this process consumes.
+    :param has_stock: Whether objects can accumulate within this process.
+
+    If `has_stock` is `True`, the model will ensure that when the output of the
+    process is determined, the input to the process must be equal, and vice
+    versa. Otherwise setting the output of the process does not automatically
+    imply the value of inputs until the change in internal stock level is also
+    specified.
+
+    """
     id: str
     produces: list[str]
     consumes: list[str]
@@ -21,6 +35,18 @@ class Process:
 
 @dataclass
 class Object:
+    """An Object represents a type of material, product, or energy.
+
+    :param id: Identifier for the object.
+    :param metric: URI identifying the metric used to quantify this object in the model.
+    :param has_market: Whether supply and demand of this object should be balanced.
+
+    If `has_market` is `True`, demand for the object will propagate through to
+    processes in the model which can produce the object, and vice versa for
+    supply. Otherwise the market for the object is assumed to be outside the
+    model boundary.
+
+    """
     id: str
     metric: URIRef
     has_market: bool = False

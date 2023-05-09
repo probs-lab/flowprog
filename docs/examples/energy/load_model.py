@@ -4,10 +4,10 @@ from flowprog.load_from_rdf import *
 
 from rdflib import Namespace, Graph
 
-rdf_data_path = "system-definitions/_build/probs_rdf/output.ttl"
+rdf_data_path = "../../_build/html/output.ttl"
 model_def_path = "model.ttl"
 
-MODEL_NS = Namespace("http://c-thru.org/analyses/calculator/model/")
+MODEL_NS = Namespace("http://probs-lab.github.io/flowprog/examples/energy-model/")
 model_uri = MODEL_NS["Model"]
 
 g = Graph()

@@ -1,0 +1,15 @@
+# Table of contents
+# Learn more at https://jupyterbook.org/customize/toc.html
+
+format: jb-book
+root: intro
+chapters:
+- file: api
+  sections:
+    - file: api-model
+    - file: api-load-from-rdf
+- file: examples/energy/index
+  sections:
+    - file: examples/energy/system-definitions
+    - file: examples/energy/explain-model
+    - file: examples/energy/energy-model

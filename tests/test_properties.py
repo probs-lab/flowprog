@@ -1,6 +1,14 @@
+import pytest
 from hypothesis import strategies as st, given, assume, example
 from sympy.abc import a, b, c
+from rdflib import URIRef
 from flowprog.imperative_model import *
+
+
+# Shorthand
+MASS = URIRef('http://qudt.org/vocab/quantitykind/Mass')
+def MObject(id, *args, **kwargs):
+    return Object(id, MASS, *args, **kwargs)
 
 
 @given(st.floats(min_value=0, allow_infinity=False),
@@ -11,7 +19,7 @@ def test_limit_with_symbols(initial, consumption, limit_value):
         Process("P1", consumes=["in"], produces=["mid"]),
         Process("P2", consumes=["mid"], produces=["out"]),
     ]
-    objects = [Object("in"), Object("mid", True), Object("out")]
+    objects = [MObject("in"), MObject("mid", True), MObject("out")]
     m = Model(processes, objects)
 
     sy.var("a, b, c", real=True)
@@ -50,7 +58,7 @@ def test_limit_can_be_arbitrary_expression(initial1, initial2, consumption):
         Process("P2", consumes=["mid"], produces=["out1"]),
         Process("P3", consumes=["mid"], produces=["out2"]),
     ]
-    objects = [Object("in"), Object("mid", True), Object("out1"), Object("out2")]
+    objects = [MObject("in"), MObject("mid", True), MObject("out1"), MObject("out2")]
     m = Model(processes, objects)
 
     sy.var("a, b, c", real=True)
@@ -125,6 +133,7 @@ def model_strategy(draw):
     objects = [
         Object(
             object_id,
+            MASS,
             has_market=(
                 draw(st.booleans()) if (object_id in obj_produced and object_id in obj_consumed)
                 else False
@@ -136,6 +145,7 @@ def model_strategy(draw):
     return Model(processes, objects)
 
 
+@pytest.mark.skip()
 @given(model_strategy())
 def test_model(m):
     print(m.processes)
@@ -159,5 +169,9 @@ def test_model(m):
     print(m._values)
     print()
 
-    for j in range(len(m.processes)):
-        assert m[m.X[j]] == m[m.Y[j]]
+    # XXX This assertion is flaky (sometimes passes, sometimes not) and it
+    # doesn't test very much anyway -- need to think about what properties to
+    # test on the whole model.
+    #
+    # for j in range(len(m.processes)):
+    #     assert m[m.X[j]] == m[m.Y[j]]

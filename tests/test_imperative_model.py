@@ -1,6 +1,13 @@
 import pytest
+from rdflib import URIRef
 
 from flowprog.imperative_model import *
+
+
+# Shorthand
+MASS = URIRef('http://qudt.org/vocab/quantitykind/Mass')
+def MObject(id, *args, **kwargs):
+    return Object(id, MASS, *args, **kwargs)
 
 
 a = sy.Symbol("a")
@@ -12,7 +19,7 @@ class TestSimpleChain:
     @pytest.fixture
     def m(self):
         processes = [Process("M1", produces=["out"], consumes=["in"])]
-        objects = [Object("in"), Object("out")]
+        objects = [MObject("in"), MObject("out")]
         return Model(processes, objects)
 
     def test_push_first_object_consumption(self, m):
@@ -83,7 +90,7 @@ class TestTwoProducersAllocateBackwards:
             Process("M1", produces=["out"], consumes=["in1"]),
             Process("M2", produces=["out"], consumes=["in2"]),
         ]
-        objects = [Object("in1"), Object("in2"), Object("out")]
+        objects = [MObject("in1"), MObject("in2"), MObject("out")]
         return Model(processes, objects)
 
     def test_pull_last_object_production(self, m):
@@ -113,7 +120,7 @@ class TestBalanceObject:
             Process("M2", consumes=["in2"], produces=["mid"]),
             Process("Use", consumes=["mid"], produces=["out"]),
         ]
-        objects = [Object("in1"), Object("in2"), Object("mid"), Object("out")]
+        objects = [MObject("in1"), MObject("in2"), MObject("mid"), MObject("out")]
         return Model(processes, objects)
 
     def test_balance_mid_object(self, m):
@@ -146,7 +153,7 @@ class TestLoops:
         processes = [
             Process("A", consumes=["B"], produces=["B"]),
         ]
-        objects = [Object("B", True)]
+        objects = [MObject("B", True)]
         return Model(processes, objects)
 
     def test_loop_works(self, m):
@@ -161,7 +168,7 @@ class TestLoops2:
             Process("A", consumes=["1"], produces=["2"]),
             Process("B", consumes=["2"], produces=["1"]),
         ]
-        objects = [Object("1", True), Object("2", True)]
+        objects = [MObject("1", True), MObject("2", True)]
         return Model(processes, objects)
 
     def test_loop_works(self, m):
@@ -177,7 +184,7 @@ class TestExpr:
             Process("M2", consumes=["in2"], produces=["mid", "by"]),
             Process("Use", consumes=["mid"], produces=["out"]),
         ]
-        objects = [Object("in1"), Object("in2"), Object("mid"), Object("by"), Object("out")]
+        objects = [MObject("in1"), MObject("in2"), MObject("mid"), MObject("by"), MObject("out")]
         return Model(processes, objects)
 
     def test_expr_process_output(self, m):

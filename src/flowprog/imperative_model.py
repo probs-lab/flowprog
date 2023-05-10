@@ -489,7 +489,7 @@ class Model:
                             self.objects[ii].id,
                             self.objects[ii].id,
                             self.objects[ii].metric,
-                            (self[Y] * S).subs(values),
+                            (self[Y] * S).xreplace(values),
                         )
                     )
         for j, X in self.X.items():
@@ -501,7 +501,7 @@ class Model:
                             self.processes[j].id,
                             self.objects[ii].id,
                             self.objects[ii].metric,
-                            (self[X] * U).subs(values),
+                            (self[X] * U).xreplace(values),
                         )
                     )
         return pd.DataFrame(rows, columns=["source", "target", "material", "metric", "value"])

@@ -24,7 +24,7 @@ NAMESPACES = {
 def query_processes(rdfox, model_uri):
     results = rdfox.query(
         """
-        SELECT ?process ?producesOrConsumes ?recipeObject ?recipeQuantity ?recipeMetric
+        SELECT DISTINCT ?process ?producesOrConsumes ?recipeObject ?recipeQuantity ?recipeMetric
         WHERE {
             ?model probs:hasProcess ?process .
             OPTIONAL {
@@ -111,11 +111,22 @@ def get_recipe_builders(rdfox, model_uri):
     return recipe_builders
 
 
-def query_object_types(rdfox, model_uri, object_types):
+def query_object_types(rdfox, model_uri):
     query = """
     SELECT ?object ?metric ?isTraded ?hasMarket
     WHERE {
-        ?object a probs:Object .
+        # First identify relevant object types based on inputs/outputs of processes
+        {
+            SELECT DISTINCT ?object
+            WHERE {
+                ?model probs:hasProcess ?process .
+                ?process recipe:hasRecipe ?recipe .
+                ?recipe ?producesOrConsumes [ recipe:object ?object ] .
+                FILTER( ?producesOrConsumes = recipe:produces || ?producesOrConsumes = recipe:consumes ) .
+            }
+        }
+
+        # Then lookup information about each object
         OPTIONAL { ?model probs:hasMarketForObject ?object . BIND(1 as ?hasMarket) . }
         OPTIONAL { ?object probs:objectMetric ?metric . }
         OPTIONAL { ?object probs:objectIsTraded ?isTraded . }
@@ -123,30 +134,19 @@ def query_object_types(rdfox, model_uri, object_types):
     ORDER BY ?object
     """
 
-    # RDFlib can't handle multiple values
-    query += "\nVALUES ( ?model ?object )\n{\n%s\n}\n" % (
-        "\n".join(
-            "( %s )" % " ".join(
-                node.n3()
-                for node in [model_uri, object_type]
-            )
-            for object_type in object_types
-        ),
-    )
-
     results = rdfox.query(
         query,
-        # initBindings={
-        #     "model": model_uri,
-        #     "object": object_types,
-        # },
+        initBindings={
+            "model": model_uri,
+        },
         initNs=NAMESPACES,
     )
 
-    matched_objects = {obj["object"] for obj in results}
-    not_found = object_types - matched_objects
-    if not_found:
-        raise ValueError("Some objects not found: %s" % not_found)
+    # XXX not sure what to check to verify all have been found?
+    # matched_objects = {obj["object"] for obj in results}
+    # not_found = object_types - matched_objects
+    # if not_found:
+    #     raise ValueError("Some objects not found: %s" % not_found)
 
     return results
 
@@ -156,19 +156,10 @@ def _create_object_type_object(item):
     return item
 
 
-def get_object_types(rdfox, model_uri, object_types):
+def get_object_types(rdfox, model_uri):
     """Query for model object types."""
-    results = query_object_types(rdfox, model_uri, object_types)
+    results = query_object_types(rdfox, model_uri)
     return [_create_object_type_object(d) for d in results]
-
-
-def get_objects_from_recipes(recipe_builders):
-    """Extract list of all object types that appear in recipes."""
-    return {
-        obj
-        for _, consumes, produces in recipe_builders
-        for obj, _, _ in produces + consumes
-    }
 
 
 def strip_uri(uri):
@@ -183,10 +174,8 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs):
     log.info("Loading recipes...")
     recipe_builders = get_recipe_builders(rdfox, model_uri)
 
-    objects_in_recipes = get_objects_from_recipes(recipe_builders)
-
     log.info("Loading object types...")
-    object_types = get_object_types(rdfox, model_uri, objects_in_recipes)
+    object_types = get_object_types(rdfox, model_uri)
 
     # return object_types, recipe_builders
 

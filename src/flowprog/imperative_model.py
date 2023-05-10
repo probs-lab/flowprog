@@ -271,7 +271,12 @@ class Model:
         self, process_id: str, object_id: str, value, until_objects=None,
         allocate_backwards=None,
     ):
-        """Specify process output backwards through the model until `until_objects`."""
+        """Specify process output backwards through the model until `until_objects`.
+
+        If `object_id` is None, set the process input magnitude $X_j$ directly.
+        Otherwise set $S_{ij} X_j$.
+
+        """
 
         if until_objects is None:
             until_objects = set()
@@ -288,9 +293,12 @@ class Model:
             process_id,
             value,
         )
-        i = self._lookup_object(object_id)
         j = self._lookup_process(process_id)
-        activity = value / self.S[i, j]
+        if object_id is not None:
+            i = self._lookup_object(object_id)
+            activity = value / self.S[i, j]
+        else:
+            activity = value
 
         result = Counter({
             self.Y[j]: activity,
@@ -329,7 +337,12 @@ class Model:
         self, process_id: str, object_id: str, value, until_objects=None,
         allocate_forwards=None,
     ):
-        """Specify process input forwards through the model until `until_objects`."""
+        """Specify process input forwards through the model until `until_objects`.
+
+        If `object_id` is None, set the process input magnitude $X_j$ directly.
+        Otherwise set $U_{ij} X_j$.
+
+        """
 
         if until_objects is None:
             until_objects = set()
@@ -346,9 +359,12 @@ class Model:
             process_id,
             value,
         )
-        i = self._lookup_object(object_id)
         j = self._lookup_process(process_id)
-        activity = value / self.U[i, j]
+        if object_id is not None:
+            i = self._lookup_object(object_id)
+            activity = value / self.U[i, j]
+        else:
+            activity = value
 
         result = Counter({
             self.X[j]: activity,

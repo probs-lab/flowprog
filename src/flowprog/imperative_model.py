@@ -462,7 +462,7 @@ class Model:
         return {
             k: sy.Piecewise(
                 (S.Zero, current >= limit),
-                (proposed, proposed <= limit - current),
+                (v, proposed <= limit - current),
                 ((limit - current) / proposed * v, True),
                 # It can be very slow...
                 evaluate=False,

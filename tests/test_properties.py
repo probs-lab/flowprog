@@ -37,16 +37,19 @@ def test_limit_with_symbols(initial, consumption, limit_value):
         a: initial,
         b: consumption,
         c: limit_value,
-        m.U[0, 0]: 1,
-        m.S[1, 0]: 1,
-        m.U[1, 1]: 1,
-        m.S[2, 1]: 1,
+        m.U[0, 0]: 1.0,
+        m.S[1, 0]: 0.6,
+        m.U[1, 1]: 2.2,
+        m.S[2, 1]: 2.0,
     })
     assert value >= initial
     # exceeded = max(0, value - max(initial, limit_value))
     # assert exceeded <= 1e-6
-    assert value <= max(initial, limit_value)
+    assert value <= max(initial / 2.0 * 2.2 / 0.6 * 1.00001 + 1e-3, limit_value)
 
+
+# TODO: check that there is a test that fails if you swap `v` to `proposed` in
+# the implementation of `limit` (middle case)
 
 @given(st.floats(min_value=0, allow_infinity=False),
        st.floats(min_value=0, allow_infinity=False),

@@ -168,7 +168,7 @@ def strip_uri(uri):
 
 from .imperative_model import Process, Object, Model
 
-def query_model_from_endpoint(rdfox, model_uri, **kwargs):
+def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[Model, dict]:
     """Query to find object types, recipe builders and observations."""
 
     log.info("Loading recipes...")

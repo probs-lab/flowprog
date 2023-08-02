@@ -59,19 +59,19 @@ class TestSimpleChain:
 
     def test_add_initial(self, m):
         m.add({m.X[0]: 3.5})
-        assert m[m.X[0]] == 3.5
+        assert m.eval(m.X[0]) == 3.5
 
     def test_add_adds(self, m):
         m.add({m.X[0]: 3.5})
         m.add({m.X[0]: 2.5})
-        assert m[m.X[0]] == 6.0
+        assert m.eval(m.X[0]) == 6.0
 
     def test_add_two_at_once(self, m):
         m.add(
             {m.X[0]: 3.5},
             {m.X[0]: 2.5},
         )
-        assert m[m.X[0]] == 6.0
+        assert m.eval(m.X[0]) == 6.0
 
     def test_pull_process_output_error_unknown(self, m):
         with pytest.raises(ValueError):
@@ -129,21 +129,21 @@ class TestBalanceObject:
             m.push_consumption("in1", b, until_objects=["mid"]),
         )
 
-        assert m[m.X[0]] == b / m.U[0, 0]
-        assert m[m.X[1]] == 0
-        assert m[m.X[2]] == a / m.S[3, 2]
+        assert m.eval(m.X[0]) == b / m.U[0, 0]
+        assert m.eval(m.X[1]) == 0
+        assert m.eval(m.X[2]) == a / m.S[3, 2]
 
         # Balance production using process M2
         m.add(
             m.pull_process_output("M2", "mid", m.object_production_deficit("mid"))
         )
 
-        assert m[m.X[0]] == b / m.U[0, 0]
+        assert m.eval(m.X[0]) == b / m.U[0, 0]
         assert (
-            m[m.X[1]]
+            m.eval(m.X[1])
             == sy.Max(0, a / m.S[3, 2] * m.U[2, 2] - b / m.U[0, 0] * m.S[2, 0]) / m.S[2, 1]
         )
-        assert m[m.X[2]] == a / m.S[3, 2]
+        assert m.eval(m.X[2]) == a / m.S[3, 2]
 
 
 class TestLoops:
@@ -188,24 +188,24 @@ class TestExpr:
         return Model(processes, objects)
 
     def test_expr_process_output(self, m):
-        expr = m.expr("ProcessOutput", process="M1", object="mid")
+        expr = m.expr("ProcessOutput", process_id="M1", object_id="mid")
         assert expr == m.Y[0] * m.S[2, 0]
 
     def test_expr_process_input(self, m):
-        expr = m.expr("ProcessInput", process="M1", object="in1")
+        expr = m.expr("ProcessInput", process_id="M1", object_id="in1")
         assert expr == m.X[0] * m.U[0, 0]
 
     def test_expr_soldproduction(self, m):
-        expr = m.expr("SoldProduction", object="mid")
+        expr = m.expr("SoldProduction", object_id="mid")
         assert expr == (
-            m.expr("ProcessOutput", process="M1", object="mid") +
-            m.expr("ProcessOutput", process="M2", object="mid")
+            m.expr("ProcessOutput", process_id="M1", object_id="mid") +
+            m.expr("ProcessOutput", process_id="M2", object_id="mid")
         )
 
     def test_expr_consumption(self, m):
-        expr = m.expr("Consumption", object="mid")
+        expr = m.expr("Consumption", object_id="mid")
         assert expr == (
-            m.expr("ProcessInput", process="Use", object="mid")
+            m.expr("ProcessInput", process_id="Use", object_id="mid")
         )
 
 # def test_solution_longer_chain():

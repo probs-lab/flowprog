@@ -33,7 +33,7 @@ def test_limit_with_symbols(initial, consumption, limit_value):
     m.add(limited_extra)
 
     # We should not have exceeded the limit
-    value = m[m.Y[0]].subs({
+    value = m.eval(m.Y[0]).subs({
         a: initial,
         b: consumption,
         c: limit_value,
@@ -91,7 +91,7 @@ def test_limit_can_be_arbitrary_expression(initial1, initial2, consumption):
         m.U[1, 2]: 1,
         m.S[3, 2]: 1,
     }
-    value = m[m.Y[0]].subs(data)
+    value = m.eval(m.Y[0]).subs(data)
     assert value >= min(initial1 + initial2, consumption)
     assert value <= initial1 + initial2
 
@@ -174,4 +174,4 @@ def test_model(m):
     # test on the whole model.
     #
     # for j in range(len(m.processes)):
-    #     assert m[m.X[j]] == m[m.Y[j]]
+    #     assert m.eval(m.X[j]] == m.eval(m.Y[j]]

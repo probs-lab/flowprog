@@ -532,7 +532,12 @@ class Model:
         args = list(args)
 
         f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr))
-        return f
+
+        str_args = [str(x) for x in args]
+        def wrapper(data):
+            relevant_data = {k: v for k, v in data.items() if k in str_args}
+            return f(**relevant_data)
+        return wrapper
 
     def to_flows(self, values):
         """Return flows data frame with variables substituted by `values`."""

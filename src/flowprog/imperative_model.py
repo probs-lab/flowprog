@@ -93,7 +93,7 @@ class Model:
         self._history: dict[sy.Expr, list[str]] = {}
 
         # Keep track of intermediate symbols
-        self._intermediates: list[tuple[sy.Expr, sy.Expr]] = []
+        self._intermediates: list[tuple[sy.Expr, sy.Expr, str]] = []
         self._intermediate_symbols = sy.numbered_symbols()
 
     def __repr__(self):
@@ -219,6 +219,8 @@ class Model:
                 pid = self.processes[j].id
                 if pid in alphas:
                     alpha = alphas[pid]
+                    if sy.S(alpha).is_zero:
+                        continue
                     # TODO : clip to [0, 1]?
                     output = production_value * alpha
                     this_result = self.pull_process_output(
@@ -271,6 +273,8 @@ class Model:
                 pid = self.processes[j].id
                 if pid in betas:
                     beta = betas[pid]
+                    if sy.S(beta).is_zero:
+                        continue
                     # TODO : clip to [0, 1]?
                     output = consumption_value * beta
                     this_result = self.push_process_input(
@@ -302,16 +306,23 @@ class Model:
         if allocate_backwards is None:
             allocate_backwards = {}
 
-        # Add the current object to `until_objects`, to avoid infinite loops
-        until_objects = set(until_objects) | {object_id}
-
-        # Save this value
         _log.debug(
             "pull_process_output: output of %s from %s = %s",
             object_id,
             process_id,
             value,
         )
+
+        # Add the current object to `until_objects`, to avoid infinite loops
+        until_objects = set(until_objects) | {object_id}
+
+        # Save this value to an intermediate symbol with a description
+        value = self._create_intermediate(
+            value,
+            f"pull_process_output value of {object_id} from {process_id}",
+        )
+
+        # Calculate required process activity
         j = self._lookup_process(process_id)
         if object_id is not None:
             i = self._lookup_object(object_id)
@@ -368,16 +379,23 @@ class Model:
         if allocate_forwards is None:
             allocate_forwards = {}
 
-        # Add the current object to `until_objects`, to avoid infinite loops
-        until_objects = set(until_objects) | {object_id}
-
-        # Save this value
         _log.debug(
             "push_process_input: input of %s into %s = %s",
             object_id,
             process_id,
             value,
         )
+
+        # Add the current object to `until_objects`, to avoid infinite loops
+        until_objects = set(until_objects) | {object_id}
+
+        # Save this value to an intermediate symbol with a description
+        value = self._create_intermediate(
+            value,
+            f"push_process_input value of {object_id} from {process_id}",
+        )
+
+        # Calculate required process activity
         j = self._lookup_process(process_id)
         if object_id is not None:
             i = self._lookup_object(object_id)
@@ -439,12 +457,14 @@ class Model:
     def object_production_deficit(self, object_id: str) -> sy.Expr:
         """Return Max(0, consumption - production) for `object_id`."""
         # XXX Is evaluate needed here? It's *much* faster without
-        return sy.Max(0, -self.object_balance(object_id), evaluate=False)
+        value = sy.Max(0, -self.object_balance(object_id), evaluate=False)
+        return self._create_intermediate(value, f"object_production_deficit for {object_id}")
 
     def object_consumption_deficit(self, object_id: str) -> sy.Expr:
         """Return Max(0, production - consumption) for `object_id`."""
         # XXX Is evaluate needed here? It's *much* faster without
-        return sy.Max(0, self.object_balance(object_id), evaluate=False)
+        value = sy.Max(0, self.object_balance(object_id), evaluate=False)
+        return self._create_intermediate(value, f"object_consumption_deficit for {object_id}")
 
     def limit(self, values, expr, limit):
         """Scale down `values` as needed to avoid exceeding `limit` for `expr`."""
@@ -480,13 +500,20 @@ class Model:
             # Assign a new intermediate variable for each new value.
             # Potentially this could be optimised.
             for sym, new_value in v.items():
-                new_sym = next(self._intermediate_symbols)
-                self._intermediates.append((new_sym, new_value))
-                self._values[sym] += new_sym
+                self._values[sym] += new_value
+                # self._values[sym] += self._create_intermediate(
+                #     new_value,
+                #     f"Intermediate symbol for {sym} within '{label}'"
+                # )
             symbols.update(v.keys())
         for symbol in symbols:
             self._history.setdefault(symbol, [])
             self._history[symbol].append(label)
+
+    def _create_intermediate(self, value: sy.Expr, description: str) -> sy.Expr:
+        new_sym = next(self._intermediate_symbols)
+        self._intermediates.append((new_sym, value, description))
+        return new_sym
 
     def get_history(self, symbol: sy.Expr) -> list[str]:
         """Return history list for `symbol`."""
@@ -497,7 +524,7 @@ class Model:
     #     # FIXME what to return when nothing stored?
     #     return self._values.get(symbol, sy.S.Zero)
 
-    def eval(self, symbol: sy.Expr, values=None):
+    def eval_intermediates(self, expr: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows."""
         if values is None:
             values = {}
@@ -507,10 +534,14 @@ class Model:
                 if isinstance(sym_value, sy.Expr)
                 else sym_value
             ))
-            for sym, sym_value in self._intermediates
+            for sym, sym_value, _ in self._intermediates
         ]
+        return expr.subs(intermediates[::-1])
+
+    def eval(self, symbol: sy.Expr, values=None):
+        """Substitute in `values` to intermediate expressions and then flows."""
         symbol_value = self._values[symbol]
-        return symbol_value.subs(intermediates[::-1])
+        return self.eval_intermediates(symbol_value)
 
     def lambdify(self, values, data_for_intermediates):
         """Return function to evalute model."""
@@ -519,7 +550,7 @@ class Model:
         # FIXME double substitution
         subexpressions = [
             (sym, expr.xreplace(data_for_intermediates).xreplace(data_for_intermediates))
-            for sym, expr in self._intermediates
+            for sym, expr, _ in self._intermediates
         ]
 
         args = (set()

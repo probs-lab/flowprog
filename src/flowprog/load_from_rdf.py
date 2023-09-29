@@ -168,8 +168,8 @@ def strip_uri(uri):
 
 from .imperative_model import Process, Object, Model
 
-def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[Model, dict]:
-    """Query to find object types, recipe builders and observations."""
+def query_endpoint(rdfox, model_uri, **kwargs) -> tuple[list, list]:
+    """Query to find object types and recipe builders."""
 
     log.info("Loading recipes...")
     recipe_builders = get_recipe_builders(rdfox, model_uri)
@@ -177,8 +177,10 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[Model, dict]:
     log.info("Loading object types...")
     object_types = get_object_types(rdfox, model_uri)
 
-    # return object_types, recipe_builders
+    return object_types, recipe_builders
 
+
+def build_model(object_types: list, recipe_builders: list, **kwargs) -> tuple[Model, dict]:
     processes = [
         Process(
             id=strip_uri(k),
@@ -231,3 +233,10 @@ def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[Model, dict]:
             raise ValueError("No recipe for %s" % p)
 
     return model, recipe_data
+
+
+def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[Model, dict]:
+    """Query to find object types, recipe builders and observations."""
+
+    object_types, recipe_builders = query_endpoint(rdfox, model_uri)
+    return build_model(object_types, recipe_builders, **kwargs)

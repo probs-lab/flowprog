@@ -544,7 +544,27 @@ class Model:
         symbol_value = self._values[symbol]
         return self.eval_intermediates(symbol_value)
 
-    def lambdify(self, values, data_for_intermediates):
+    def lambdify(self, data=None):
+        """Return function to evalute model."""
+
+        if data is None:
+            data = {}
+
+        flows_sym = self.to_flows(data, flow_ids=True)
+
+        # Function that returns a vector of values in same order as flows_sym
+        func = self._lambdify(flows_sym.value.values, data)
+
+        # Create a friendlier wrapper
+        str_args = func.__code__.co_varnames[:func.__code__.co_argcount]
+        def wrapper(data):
+            relevant_data = {k: v for k, v in data.items() if k in str_args}
+            values = func(**relevant_data)
+            return dict(zip(flows_sym["id"], values))
+
+        return wrapper
+
+    def _lambdify(self, values, data_for_intermediates):
         """Return function to evalute model."""
 
         # Substitute recipe in intermediates now
@@ -552,6 +572,12 @@ class Model:
         subexpressions = [
             (sym, expr.xreplace(data_for_intermediates).xreplace(data_for_intermediates))
             for sym, expr, _ in self._intermediates
+        ]
+
+        # Substitute data in values too
+        values = [
+            expr.xreplace(data_for_intermediates)
+            for expr in values
         ]
 
         args = (set()
@@ -565,11 +591,7 @@ class Model:
 
         f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr))
 
-        str_args = [str(x) for x in args]
-        def wrapper(data):
-            relevant_data = {k: v for k, v in data.items() if k in str_args}
-            return f(**relevant_data)
-        return wrapper
+        return f
 
     def to_flows(self, values, flow_ids=None):
         """Return flows data frame with variables substituted by `values`.

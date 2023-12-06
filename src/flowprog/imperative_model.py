@@ -1,3 +1,4 @@
+import hashlib
 from typing import Iterable, Optional
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -570,9 +571,13 @@ class Model:
             return f(**relevant_data)
         return wrapper
 
-    def to_flows(self, values):
-        """Return flows data frame with variables substituted by `values`."""
+    def to_flows(self, values, flow_ids=None):
+        """Return flows data frame with variables substituted by `values`.
+
+        When `flow_ids` is True, assign hash-based flow ids to each row.
+        """
         rows = []
+
         M = len(self.processes)
         for j in range(M):
             for i in (self._obj_name_to_idx[name] for name in self.processes[j].produces):
@@ -596,4 +601,14 @@ class Model:
                         (self._values[self.X[j]] * self.U[i, j]).xreplace(values),
                     )
                 )
-        return pd.DataFrame(rows, columns=["source", "target", "material", "metric", "value"])
+
+        result = pd.DataFrame(rows, columns=["source", "target", "material", "metric", "value"])
+
+        if flow_ids:
+            def flow_id(row):
+                return hashlib.md5(
+                    (row["source"] + row["target"] + row["material"]).encode()
+                ).hexdigest()
+            result["id"] = result.apply(flow_id, axis=1)
+
+        return result

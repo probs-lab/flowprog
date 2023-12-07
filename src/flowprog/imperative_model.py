@@ -28,6 +28,7 @@ class Process:
     specified.
 
     """
+
     id: str
     produces: list[str]
     consumes: list[str]
@@ -48,6 +49,7 @@ class Object:
     model boundary.
 
     """
+
     id: str
     metric: URIRef
     has_market: bool = False
@@ -114,14 +116,22 @@ class Model:
 
     def producers_of(self, object_id: str) -> Iterable[str]:
         i = self._lookup_object(object_id)
-        return [self.processes[j].id for j in self._processes_producing_object.get(i, [])]
+        return [
+            self.processes[j].id for j in self._processes_producing_object.get(i, [])
+        ]
 
     def consumers_of(self, object_id: str) -> Iterable[str]:
         i = self._lookup_object(object_id)
-        return [self.processes[j].id for j in self._processes_consuming_object.get(i, [])]
+        return [
+            self.processes[j].id for j in self._processes_consuming_object.get(i, [])
+        ]
 
     def expr(
-        self, role: str, *, process_id: Optional[str] = None, object_id: Optional[str] = None
+        self,
+        role: str,
+        *,
+        process_id: Optional[str] = None,
+        object_id: Optional[str] = None,
     ) -> sy.Expr:
         """Return expression for `role` (see PRObs Ontology)."""
         if role == "ProcessOutput":
@@ -136,14 +146,20 @@ class Model:
             assert object_id is not None
             i = self._lookup_object(object_id)
             return sum(
-                self.expr("ProcessOutput", process_id=self.processes[j].id, object_id=object_id)  # type:ignore
+                self.expr(
+                    "ProcessOutput",
+                    process_id=self.processes[j].id,
+                    object_id=object_id,
+                )  # type:ignore
                 for j in self._processes_producing_object.get(i, [])
             )
         elif role == "Consumption":
             assert object_id is not None
             i = self._lookup_object(object_id)
             return sum(
-                self.expr("ProcessInput", process_id=self.processes[j].id, object_id=object_id)  # type:ignore
+                self.expr(
+                    "ProcessInput", process_id=self.processes[j].id, object_id=object_id
+                )  # type:ignore
                 for j in self._processes_consuming_object.get(i, [])
             )
         else:
@@ -154,8 +170,8 @@ class Model:
 
         if object_id not in allocation:
             raise ValueError(
-                "Allocation coefficient not defined for %s -> {%s}" %
-                (object_id, ", ".join(self.processes[j].id for j in processes))
+                "Allocation coefficient not defined for %s -> {%s}"
+                % (object_id, ", ".join(self.processes[j].id for j in processes))
             )
         alphas = allocation[object_id]
 
@@ -166,25 +182,31 @@ class Model:
         if isinstance(total, (int, float)):
             if abs(total - 1) > tol:
                 msg = (
-                    "Backwards allocation coefficient for %s does not sum to 1 (actual sum: %.3f)." %
-                    (object_id, total)
+                    "Backwards allocation coefficient for %s does not sum to 1 (actual sum: %.3f)."
+                    % (object_id, total)
                 )
                 if missing_processes:
-                    msg += " These processes have not been included: %s" % (", ".join(missing_processes))
+                    msg += " These processes have not been included: %s" % (
+                        ", ".join(missing_processes)
+                    )
                 raise ValueError(msg)
         elif missing_processes:
             # If we can't test with real coefficients that they sum to 1, we
             # require all symbols to be given
-            msg = (
-                "Not all processes are included in allocation coefficients: %s" %
-                (", ".join(missing_processes))
+            msg = "Not all processes are included in allocation coefficients: %s" % (
+                ", ".join(missing_processes)
             )
             raise ValueError(msg)
 
         return alphas
 
-    def pull_production(self, object_id: str, production_value, until_objects=None,
-                        allocate_backwards=None):
+    def pull_production(
+        self,
+        object_id: str,
+        production_value,
+        until_objects=None,
+        allocate_backwards=None,
+    ):
         """Pull production value backwards through the model until `until_objects`."""
 
         if until_objects is None:
@@ -237,8 +259,13 @@ class Model:
         else:
             raise ValueError(f"No processes produce {object_id}")
 
-    def push_consumption(self, object_id: str, consumption_value, until_objects=None,
-                         allocate_forwards=None):
+    def push_consumption(
+        self,
+        object_id: str,
+        consumption_value,
+        until_objects=None,
+        allocate_forwards=None,
+    ):
         """Push consumption value forwards through the model until `until_objects`."""
 
         if until_objects is None:
@@ -292,7 +319,11 @@ class Model:
             raise ValueError(f"No processes consume {object_id}")
 
     def pull_process_output(
-        self, process_id: str, object_id: str, value, until_objects=None,
+        self,
+        process_id: str,
+        object_id: str,
+        value,
+        until_objects=None,
         allocate_backwards=None,
     ):
         """Specify process output backwards through the model until `until_objects`.
@@ -353,11 +384,18 @@ class Model:
             _log.debug("pull_process_output: object %s", self.objects[i])
             # XXX should this check be in pull_production?
             if not self.objects[i].has_market:
-                _log.debug("pull_process_output: reached object without market %s, stopping", obj)
+                _log.debug(
+                    "pull_process_output: reached object without market %s, stopping",
+                    obj,
+                )
                 continue
             production = activity * self.U[i, j]
-            more = self.pull_production(obj, production, until_objects=until_objects,
-                                        allocate_backwards=allocate_backwards)
+            more = self.pull_production(
+                obj,
+                production,
+                until_objects=until_objects,
+                allocate_backwards=allocate_backwards,
+            )
             # merge sum
             for k, v in more.items():
                 result[k] += v
@@ -365,7 +403,11 @@ class Model:
         return result
 
     def push_process_input(
-        self, process_id: str, object_id: str, value, until_objects=None,
+        self,
+        process_id: str,
+        object_id: str,
+        value,
+        until_objects=None,
         allocate_forwards=None,
     ):
         """Specify process input forwards through the model until `until_objects`.
@@ -426,11 +468,18 @@ class Model:
             _log.debug("push_process_input: object %s", self.objects[i])
             # XXX should this check be in push_consumption?
             if not self.objects[i].has_market:
-                _log.debug("push_process_input: reached object without market %s, stopping", obj)
+                _log.debug(
+                    "push_process_input: reached object without market %s, stopping",
+                    obj,
+                )
                 continue
             production = activity * self.S[i, j]
-            more = self.push_consumption(obj, production, until_objects=until_objects,
-                                         allocate_forwards=allocate_forwards)
+            more = self.push_consumption(
+                obj,
+                production,
+                until_objects=until_objects,
+                allocate_forwards=allocate_forwards,
+            )
             # merge sum
             for k, v in more.items():
                 result[k] += v
@@ -459,25 +508,33 @@ class Model:
         """Return Max(0, consumption - production) for `object_id`."""
         # XXX Is evaluate needed here? It's *much* faster without
         value = sy.Max(0, -self.object_balance(object_id), evaluate=False)
-        return self._create_intermediate(value, f"object_production_deficit for {object_id}")
+        return self._create_intermediate(
+            value, f"object_production_deficit for {object_id}"
+        )
 
     def object_consumption_deficit(self, object_id: str) -> sy.Expr:
         """Return Max(0, production - consumption) for `object_id`."""
         # XXX Is evaluate needed here? It's *much* faster without
         value = sy.Max(0, self.object_balance(object_id), evaluate=False)
-        return self._create_intermediate(value, f"object_consumption_deficit for {object_id}")
+        return self._create_intermediate(
+            value, f"object_consumption_deficit for {object_id}"
+        )
 
     def limit(self, values, expr, limit):
         """Scale down `values` as needed to avoid exceeding `limit` for `expr`."""
         # if symbol not in proposed:
         #     raise ValueError("Nothing proposed for %r" % symbol)
         M = len(self.processes)
-        limit = S(limit) \
-            .subs({self.X[j]: self._values[self.X[j]] for j in range(M)}) \
+        limit = (
+            S(limit)
+            .subs({self.X[j]: self._values[self.X[j]] for j in range(M)})
             .subs({self.Y[j]: self._values[self.Y[j]] for j in range(M)})
-        current = S(expr) \
-            .subs({self.X[j]: self._values[self.X[j]] for j in range(M)}) \
+        )
+        current = (
+            S(expr)
+            .subs({self.X[j]: self._values[self.X[j]] for j in range(M)})
             .subs({self.Y[j]: self._values[self.Y[j]] for j in range(M)})
+        )
         # S(self[symbol])
         proposed = S(expr).subs(values)
         return {
@@ -530,11 +587,14 @@ class Model:
         if values is None:
             values = {}
         intermediates = [
-            (sym, (
-                sym_value.xreplace(values)
-                if isinstance(sym_value, sy.Expr)
-                else sym_value
-            ))
+            (
+                sym,
+                (
+                    sym_value.xreplace(values)
+                    if isinstance(sym_value, sy.Expr)
+                    else sym_value
+                ),
+            )
             for sym, sym_value, _ in self._intermediates
         ]
         return expr.subs(intermediates[::-1])
@@ -556,7 +616,8 @@ class Model:
         func = self._lambdify(flows_sym.value.values, data)
 
         # Create a friendlier wrapper
-        str_args = func.__code__.co_varnames[:func.__code__.co_argcount]
+        str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
+
         def wrapper(data):
             relevant_data = {k: v for k, v in data.items() if k in str_args}
             values = func(**relevant_data)
@@ -570,20 +631,22 @@ class Model:
         # Substitute recipe in intermediates now
         # FIXME double substitution
         subexpressions = [
-            (sym, expr.xreplace(data_for_intermediates).xreplace(data_for_intermediates))
+            (
+                sym,
+                expr.xreplace(data_for_intermediates).xreplace(data_for_intermediates),
+            )
             for sym, expr, _ in self._intermediates
         ]
 
         # Substitute data in values too
-        values = [
-            expr.xreplace(data_for_intermediates)
-            for expr in values
-        ]
+        values = [expr.xreplace(data_for_intermediates) for expr in values]
 
-        args = (set()
-                .union(*(expr.free_symbols for expr in values))
-                .union(*(expr.free_symbols for _, expr in subexpressions))
-                .difference(sym for sym, _ in subexpressions))
+        args = (
+            set()
+            .union(*(expr.free_symbols for expr in values))
+            .union(*(expr.free_symbols for _, expr in subexpressions))
+            .difference(sym for sym, _ in subexpressions)
+        )
         # Indexed objects return themselves (e.g. S[1, 1]) as a free symbol as
         # well as the base matrix (e.g. S)
         args = {x for x in args if not isinstance(x, sy.Indexed)}
@@ -602,7 +665,9 @@ class Model:
 
         M = len(self.processes)
         for j in range(M):
-            for i in (self._obj_name_to_idx[name] for name in self.processes[j].produces):
+            for i in (
+                self._obj_name_to_idx[name] for name in self.processes[j].produces
+            ):
                 rows.append(
                     (
                         self.processes[j].id,
@@ -613,7 +678,9 @@ class Model:
                     )
                 )
         for j in range(M):
-            for i in (self._obj_name_to_idx[name] for name in self.processes[j].consumes):
+            for i in (
+                self._obj_name_to_idx[name] for name in self.processes[j].consumes
+            ):
                 rows.append(
                     (
                         self.objects[i].id,
@@ -624,13 +691,17 @@ class Model:
                     )
                 )
 
-        result = pd.DataFrame(rows, columns=["source", "target", "material", "metric", "value"])
+        result = pd.DataFrame(
+            rows, columns=["source", "target", "material", "metric", "value"]
+        )
 
         if flow_ids:
+
             def flow_id(row):
                 return hashlib.md5(
                     (row["source"] + row["target"] + row["material"]).encode()
                 ).hexdigest()
+
             result["id"] = result.apply(flow_id, axis=1)
 
         return result

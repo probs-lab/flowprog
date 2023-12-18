@@ -1,5 +1,5 @@
 import hashlib
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Container
 from collections import defaultdict
 from dataclasses import dataclass, field
 from rdflib import URIRef
@@ -132,8 +132,15 @@ class Model:
         *,
         process_id: Optional[str] = None,
         object_id: Optional[str] = None,
+        limit_to_processes: Optional[Container[str]] = None,
     ) -> sy.Expr:
-        """Return expression for `role` (see PRObs Ontology)."""
+        """Return expression for `role` (see PRObs Ontology).
+
+        If `limit_to_processes` is not None, only the specified processes'
+        production/consumption will be included in the `SoldProduction` and
+        `Consumption` expressions.
+
+        """
         if role == "ProcessOutput":
             assert object_id is not None and process_id is not None
             i, j = self._lookup_object(object_id), self._lookup_process(process_id)
@@ -145,22 +152,28 @@ class Model:
         elif role == "SoldProduction":
             assert object_id is not None
             i = self._lookup_object(object_id)
-            return sum(
+            pids = [j for j in self._processes_producing_object.get(i, [])]
+            if limit_to_processes is not None:
+                pids = [j for j in pids if self.processes[j].id in limit_to_processes]
+            return sum(  # type:ignore
                 self.expr(
                     "ProcessOutput",
                     process_id=self.processes[j].id,
                     object_id=object_id,
-                )  # type:ignore
-                for j in self._processes_producing_object.get(i, [])
+                )
+                for j in pids
             )
         elif role == "Consumption":
             assert object_id is not None
             i = self._lookup_object(object_id)
-            return sum(
+            pids = [j for j in self._processes_consuming_object.get(i, [])]
+            if limit_to_processes is not None:
+                pids = [j for j in pids if self.processes[j].id in limit_to_processes]
+            return sum(  # type:ignore
                 self.expr(
                     "ProcessInput", process_id=self.processes[j].id, object_id=object_id
-                )  # type:ignore
-                for j in self._processes_consuming_object.get(i, [])
+                )
+                for j in pids
             )
         else:
             raise ValueError("Unknown role %r" % role)
@@ -619,7 +632,10 @@ class Model:
         str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
 
         def wrapper(data):
-            relevant_data = {k: v for k, v in data.items() if k in str_args}
+            relevant_data = {str(k): v for k, v in data.items() if str(k) in str_args}
+            missing_params = set(str_args) - set(relevant_data)
+            if missing_params:
+                raise ValueError("Missing parameters: %s" % missing_params)
             values = func(**relevant_data)
             return dict(zip(flows_sym["id"], values))
 

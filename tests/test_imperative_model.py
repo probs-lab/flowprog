@@ -82,6 +82,23 @@ class TestTwoProducersAllocateBackwards:
         objects = [MObject("in1"), MObject("in2"), MObject("out")]
         return Model(processes, objects)
 
+    @pytest.fixture
+    def m2(self):
+        # Like m fixture above but with another layer
+        processes = [
+            Process("M1", produces=["out"], consumes=["in1"]),
+            Process("M2", produces=["out"], consumes=["in2"]),
+            Process("U1", produces=["in2"], consumes=["primary"]),
+            Process("U2", produces=["in2"], consumes=["primary"]),
+        ]
+        objects = [
+            MObject("primary"),
+            MObject("in1"),
+            MObject("in2", has_market=True),
+            MObject("out"),
+        ]
+        return Model(processes, objects)
+
     def test_pull_last_object_production(self, m):
         d = sy.Symbol("d")
         a1 = sy.Symbol("a1")
@@ -99,6 +116,44 @@ class TestTwoProducersAllocateBackwards:
         assert m.eval_intermediates(result[m.X[0]]) == d * a1 / m.S[2, 0]
         assert m.eval_intermediates(result[m.X[1]]) == d * a2 / m.S[2, 1]
 
+    def test_error_when_missing_allocate_backwards(self, m):
+        d = sy.Symbol("d")
+        with pytest.raises(ValueError, match="not defined for out"):
+            m.pull_production("out", d, allocate_backwards={})
+
+    def test_error_when_allocate_backwards_has_unknown_process(self, m):
+        d = sy.Symbol("d")
+        with pytest.raises(ValueError, match="Unknown process id Unknown"):
+            m.pull_production("out", d, allocate_backwards={"out": {"Unknown": 1}})
+
+    def test_error_when_allocate_backwards_does_not_add_up(self, m):
+        d = sy.Symbol("d")
+        with pytest.raises(ValueError, match="does not sum to 1"):
+            m.pull_production(
+                "out", d, allocate_backwards={"out": {"M1": 0.1, "M2": 0.1}}
+            )
+
+    def test_allocate_backwards_not_required_when_not_needed(self, m2):
+        d = sy.Symbol("d")
+        # Here no production from M2 is required, so the allocation of "in2" is
+        # irrelevant.
+        m2.pull_production("out", d, allocate_backwards={"out": {"M1": 1, "M2": 0}})
+
+        # Here production for M2 is required, so the allocation is needed.
+        with pytest.raises(ValueError, match="not defined for in2"):
+            m2.pull_production(
+                "out", d, allocate_backwards={"out": {"M1": 0.5, "M2": 0.5}}
+            )
+
+        # This should be ok
+        m2.pull_production(
+            "out",
+            d,
+            allocate_backwards={
+                "out": {"M1": 0.5, "M2": 0.5},
+                "in2": {"U1": 0.2, "U2": 0.8},
+            },
+        )
 
 
 class TestBalanceObject:

@@ -187,6 +187,9 @@ class Model:
                 % (object_id, ", ".join(self.processes[j].id for j in processes))
             )
         alphas = allocation[object_id]
+        # Raises error for unknown processes by side effect
+        for k in alphas.keys():
+            self._lookup_process(k)
 
         total = sum(alphas.values())
         pids = [self.processes[j].id for j in processes]

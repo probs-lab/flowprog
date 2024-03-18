@@ -365,7 +365,10 @@ class Model:
         # Add the current object to `until_objects`, to avoid infinite loops
         until_objects = set(until_objects) | {object_id}
 
-        # Save this value to an intermediate symbol with a description
+        # Save this value to an intermediate symbol with a description. FIXME:
+        # this is now a bit messy, originally the methods like
+        # pull_process_output just returned a pure result, now they define
+        # intermediates as a side effect.
         value = self._create_intermediate(
             value,
             f"pull_process_output value of {object_id} from {process_id}",

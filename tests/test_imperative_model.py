@@ -5,7 +5,9 @@ from flowprog.imperative_model import *
 
 
 # Shorthand
-MASS = URIRef('http://qudt.org/vocab/quantitykind/Mass')
+MASS = URIRef("http://qudt.org/vocab/quantitykind/Mass")
+
+
 def MObject(id, *args, **kwargs):
     return Object(id, MASS, *args, **kwargs)
 
@@ -15,7 +17,6 @@ b = sy.Symbol("b")
 
 
 class TestSimpleChain:
-
     @pytest.fixture
     def m(self):
         processes = [Process("M1", produces=["out"], consumes=["in"])]
@@ -24,37 +25,26 @@ class TestSimpleChain:
 
     def test_push_first_object_consumption(self, m):
         result = m.push_consumption("in", a)
-        assert result == {
-            m.X[0]: a / m.U[0, 0],
-            m.Y[0]: a / m.U[0, 0],
-        }
+        assert m.eval_intermediates(result[m.X[0]]) == a / m.U[0, 0]
+        assert m.eval_intermediates(result[m.Y[0]]) == a / m.U[0, 0]
 
     def test_push_process_input(self, m):
         result = m.push_process_input("M1", "in", a)
-        assert result == {
-            m.X[0]: a / m.U[0, 0],
-            m.Y[0]: a / m.U[0, 0],
-        }
+        assert m.eval_intermediates(result[m.X[0]]) == a / m.U[0, 0]
+        assert m.eval_intermediates(result[m.Y[0]]) == a / m.U[0, 0]
 
     def test_pull_process_output(self, m):
         result = m.pull_process_output("M1", "out", a)
-        assert result == {
-            m.X[0]: a / m.S[1, 0],
-            m.Y[0]: a / m.S[1, 0],
-        }
+        assert m.eval_intermediates(result[m.X[0]]) == a / m.S[1, 0]
+        assert m.eval_intermediates(result[m.Y[0]]) == a / m.S[1, 0]
 
     def test_pull_last_object_production(self, m):
         result = m.pull_production("out", a)
-        assert result == {
-            m.X[0]: a / m.S[1, 0],
-            m.Y[0]: a / m.S[1, 0],
-        }
+        assert m.eval_intermediates(result[m.X[0]]) == a / m.S[1, 0]
+        assert m.eval_intermediates(result[m.Y[0]]) == a / m.S[1, 0]
 
     def test_label(self, m):
-        m.add(
-            m.push_consumption("in", a),
-            label="label"
-        )
+        m.add(m.push_consumption("in", a), label="label")
         assert m.get_history(m.X[0]) == ["label"]
 
     def test_add_initial(self, m):
@@ -83,7 +73,6 @@ class TestSimpleChain:
 
 
 class TestTwoProducersAllocateBackwards:
-
     @pytest.fixture
     def m(self):
         processes = [
@@ -107,12 +96,12 @@ class TestTwoProducersAllocateBackwards:
                 }
             },
         )
-        assert result[m.X[0]] == d * a1 / m.S[2, 0]
-        assert result[m.X[1]] == d * a2 / m.S[2, 1]
+        assert m.eval_intermediates(result[m.X[0]]) == d * a1 / m.S[2, 0]
+        assert m.eval_intermediates(result[m.X[1]]) == d * a2 / m.S[2, 1]
+
 
 
 class TestBalanceObject:
-
     @pytest.fixture
     def m(self):
         processes = [
@@ -134,20 +123,18 @@ class TestBalanceObject:
         assert m.eval(m.X[2]) == a / m.S[3, 2]
 
         # Balance production using process M2
-        m.add(
-            m.pull_process_output("M2", "mid", m.object_production_deficit("mid"))
-        )
+        m.add(m.pull_process_output("M2", "mid", m.object_production_deficit("mid")))
 
         assert m.eval(m.X[0]) == b / m.U[0, 0]
         assert (
             m.eval(m.X[1])
-            == sy.Max(0, a / m.S[3, 2] * m.U[2, 2] - b / m.U[0, 0] * m.S[2, 0]) / m.S[2, 1]
+            == sy.Max(0, a / m.S[3, 2] * m.U[2, 2] - b / m.U[0, 0] * m.S[2, 0])
+            / m.S[2, 1]
         )
         assert m.eval(m.X[2]) == a / m.S[3, 2]
 
 
 class TestLoops:
-
     @pytest.fixture
     def m(self):
         processes = [
@@ -161,7 +148,6 @@ class TestLoops:
 
 
 class TestLoops2:
-
     @pytest.fixture
     def m(self):
         processes = [
@@ -176,7 +162,6 @@ class TestLoops2:
 
 
 class TestExpr:
-
     @pytest.fixture
     def m(self):
         processes = [
@@ -184,7 +169,13 @@ class TestExpr:
             Process("M2", consumes=["in2"], produces=["mid", "by"]),
             Process("Use", consumes=["mid"], produces=["out"]),
         ]
-        objects = [MObject("in1"), MObject("in2"), MObject("mid"), MObject("by"), MObject("out")]
+        objects = [
+            MObject("in1"),
+            MObject("in2"),
+            MObject("mid"),
+            MObject("by"),
+            MObject("out"),
+        ]
         return Model(processes, objects)
 
     def test_expr_process_output(self, m):
@@ -198,15 +189,14 @@ class TestExpr:
     def test_expr_soldproduction(self, m):
         expr = m.expr("SoldProduction", object_id="mid")
         assert expr == (
-            m.expr("ProcessOutput", process_id="M1", object_id="mid") +
-            m.expr("ProcessOutput", process_id="M2", object_id="mid")
+            m.expr("ProcessOutput", process_id="M1", object_id="mid")
+            + m.expr("ProcessOutput", process_id="M2", object_id="mid")
         )
 
     def test_expr_consumption(self, m):
         expr = m.expr("Consumption", object_id="mid")
-        assert expr == (
-            m.expr("ProcessInput", process_id="Use", object_id="mid")
-        )
+        assert expr == (m.expr("ProcessInput", process_id="Use", object_id="mid"))
+
 
 # def test_solution_longer_chain():
 #     # two processes with balancing object in the middle

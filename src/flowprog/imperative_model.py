@@ -299,6 +299,8 @@ class Model:
         processes = self._processes_consuming_object.get(i, [])
         _log.debug("push_consumption: consuming processes: %s", processes)
         if len(processes) == 1:
+            # FIXME: this should warn that the allocate_forwards value will be
+            # ignored if there is only one process.
             return self.push_process_input(
                 self.processes[processes[0]].id,
                 object_id,
@@ -310,10 +312,12 @@ class Model:
             # allocate
             betas = self._get_allocation(allocate_forwards, object_id, processes)
             result = defaultdict(lambda: sy.S.Zero)
+            # FIXME: should warn if all the allocations are zero??
             for j in processes:
                 pid = self.processes[j].id
                 if pid in betas:
                     beta = betas[pid]
+                    _log.debug("push_consumption: alloc %s to %s", beta, pid)
                     if sy.S(beta).is_zero:
                         continue
                     # TODO : clip to [0, 1]?
@@ -617,16 +621,28 @@ class Model:
         symbol_value = self._values[symbol]
         return self.eval_intermediates(symbol_value)
 
-    def lambdify(self, data=None):
-        """Return function to evalute model."""
+    def lambdify(self, data=None, expressions: Optional[dict]=None):
+        """Return function to evalute model.
+
+        If `expressions` is given as a dictionary of sympy expression, the
+        resulting function returns a similar dict with evaluated values.
+        Otherwise the model's flows are used as the expressions.
+
+        """
 
         if data is None:
             data = {}
 
-        flows_sym = self.to_flows(data, flow_ids=True)
+        if expressions is None:
+            flows_sym = self.to_flows(data, flow_ids=True)
+            index = flows_sym["id"]
+            expr_values = flows_sym.value.values
+        else:
+            index = expressions.keys()
+            expr_values = expressions.values()
 
         # Function that returns a vector of values in same order as flows_sym
-        func = self._lambdify(flows_sym.value.values, data)
+        func = self._lambdify(expr_values, data)
 
         # Create a friendlier wrapper
         str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
@@ -637,7 +653,7 @@ class Model:
             if missing_params:
                 raise ValueError("Missing parameters: %s" % missing_params)
             values = func(**relevant_data)
-            return dict(zip(flows_sym["id"], values))
+            return dict(zip(index, values))
 
         return wrapper
 

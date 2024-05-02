@@ -654,7 +654,12 @@ class Model:
         str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
 
         def wrapper(data):
-            relevant_data = {str(k): v for k, v in data.items() if str(k) in str_args}
+            converted_data = convert_indexed_symbols(data)
+            relevant_data = {
+                str(k): v
+                for k, v in converted_data.items()
+                if str(k) in str_args
+            }
             missing_params = set(str_args) - set(relevant_data)
             if missing_params:
                 raise ValueError("Missing parameters: %s" % missing_params)
@@ -743,3 +748,20 @@ class Model:
             result["id"] = result.apply(flow_id, axis=1)
 
         return result
+
+
+def convert_indexed_symbols(data):
+    """Convert {S[1, 2]: 7} to {S: {(1, 2): 7}}
+
+    This works better with lambdified functions."""
+    converted = {}
+    for k, v in data.items():
+        if isinstance(k, sy.Indexed):
+            sym = k.base
+            if sym not in converted:
+                converted[sym] = {}
+            indices = k.indices if len(k.indices) > 1 else k.indices[0]
+            converted[sym][indices] = v
+        else:
+            converted[k] = v
+    return converted

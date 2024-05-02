@@ -558,26 +558,30 @@ class Model:
             .subs({self.X[j]: self._values[self.X[j]] for j in range(M)})
             .subs({self.Y[j]: self._values[self.Y[j]] for j in range(M)})
         )
-        proposed = S(expr).subs(values)
+        proposed = (
+            S(expr)
+            .subs({self.X[j]: self._values[self.X[j]] + values.get(self.X[j], 0) for j in range(M)})
+            .subs({self.Y[j]: self._values[self.Y[j]] + values.get(self.Y[j], 0) for j in range(M)})
+        )
 
-        # Check that `expr` is actually related to `values`. An example problem
-        # would be if `expr` includes the output of process B, but `values`
-        # relates only to process A.
-        has_free_symbols = {
-            sym
-            for sym in proposed.free_symbols
-            if (
-                    hasattr(sym, "base")
-                    and sym.base in (self.X, self.Y))
-        }
-        if has_free_symbols:
-            raise ValueError(f"limit `expr` contains process symbols not included in `values`: {has_free_symbols}")
+        # # Check that `expr` is actually related to `values`. An example problem
+        # # would be if `expr` includes the output of process B, but `values`
+        # # relates only to process A.
+        # has_free_symbols = {
+        #     sym
+        #     for sym in proposed.free_symbols
+        #     if (
+        #             hasattr(sym, "base")
+        #             and sym.base in (self.X, self.Y))
+        # }
+        # if has_free_symbols:
+        #     raise ValueError(f"limit `expr` contains process symbols not included in `values`: {has_free_symbols}")
 
         return {
             k: sy.Piecewise(
                 (S.Zero, current >= limit),
-                (v, proposed <= limit - current),
-                ((limit - current) / proposed * v, True),
+                (v, proposed <= limit),
+                ((limit - current) / (proposed - current) * v, True),
                 # It can be very slow...
                 evaluate=False,
             )

@@ -99,6 +99,55 @@ def test_limit_can_be_arbitrary_expression(initial1, initial2, consumption):
     assert value <= initial1 + initial2
 
 
+@given(st.floats(min_value=0, allow_infinity=False),
+       st.floats(min_value=0, allow_infinity=False),
+       st.floats(min_value=0, allow_infinity=False))
+@example(2, 3, 10)
+def test_limit_involving_unrelated_process(initial_demand, extra_demand, capacity):
+    processes = [
+        Process("P1", consumes=["in"], produces=["out1"]),
+        Process("P2", consumes=["in"], produces=["out2"]),
+    ]
+    objects = [MObject("in"), MObject("out1"), MObject("out2")]
+    m = Model(processes, objects)
+
+    sy.var("a, b, c", real=True)
+
+    # First flows
+    m.add(m.pull_production("out1", a))
+
+    # Add extra demand with limit
+    unlimited_extra = m.pull_production("out2", b)
+    test_expr = (
+        m.expr("ProcessOutput", process_id="P1", object_id="out1") +
+        m.expr("ProcessOutput", process_id="P2", object_id="out2")
+    )
+    limit_expr = c
+    limited_extra = m.limit(
+        unlimited_extra,
+        test_expr,
+        limit_expr,
+    )
+    m.add(limited_extra)
+
+    # We should not have exceeded the limit
+    data = {
+        a: initial_demand,
+        b: extra_demand,
+        c: capacity,
+        m.U[0, 0]: 1,
+        m.S[1, 0]: 1,
+        m.U[1, 1]: 1,
+        m.S[2, 1]: 1,
+    }
+    value1 = m.eval(m.Y[0]).subs(data)
+    value2 = m.eval(m.Y[1]).subs(data)
+    assert value1 == initial_demand, "initial demand satisfied exactly"
+    assert value1 + value2 <= max(initial_demand, capacity), "limit applied"
+    if initial_demand + extra_demand < capacity:
+        assert value2 == extra_demand
+
+
 # Define arbitrary models for testing
 
 @st.composite

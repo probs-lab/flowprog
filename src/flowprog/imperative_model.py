@@ -558,8 +558,21 @@ class Model:
             .subs({self.X[j]: self._values[self.X[j]] for j in range(M)})
             .subs({self.Y[j]: self._values[self.Y[j]] for j in range(M)})
         )
-        # S(self[symbol])
         proposed = S(expr).subs(values)
+
+        # Check that `expr` is actually related to `values`. An example problem
+        # would be if `expr` includes the output of process B, but `values`
+        # relates only to process A.
+        has_free_symbols = {
+            sym
+            for sym in proposed.free_symbols
+            if (
+                    hasattr(sym, "base")
+                    and sym.base in (self.X, self.Y))
+        }
+        if has_free_symbols:
+            raise ValueError(f"limit `expr` contains process symbols not included in `values`: {has_free_symbols}")
+
         return {
             k: sy.Piecewise(
                 (S.Zero, current >= limit),

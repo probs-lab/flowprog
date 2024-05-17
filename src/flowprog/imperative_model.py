@@ -579,9 +579,20 @@ class Model:
 
         return {
             k: sy.Piecewise(
+                # Already exceeded the limit, don't add any more
                 (S.Zero, current >= limit),
+
+                # New proposed value is less than the limit, no modification
+                # needed
                 (v, proposed <= limit),
+
+                # Proposed value needs to be scaled down to just reach limit
                 ((limit - current) / (proposed - current) * v, True),
+
+                # FIXME when `proposed - current` evaluates to zero, this can
+                # cause invalid division by zero warnings. The branch should not
+                # be reached but there is still an error.  Can we avoid it?
+
                 # It can be very slow...
                 evaluate=False,
             )

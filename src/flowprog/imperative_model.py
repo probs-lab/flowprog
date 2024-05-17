@@ -723,7 +723,17 @@ class Model:
         args = {x for x in args if not isinstance(x, sy.Indexed)}
         args = list(args)
 
-        f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr))
+        compiled = False
+        if compiled:
+            from sympy.utilities.autowrap import get_code_generator, F2PyCodeWrapper
+            code_gen = get_code_generator("F95", "autowrap")
+            code_gen.cse = subexpressions
+            code_wrapper = F2PyCodeWrapper(code_gen, verbose=True)
+            expr = sy.Array(values)
+            routine = code_gen.routine('autofunc', expr, args)
+            f = code_wrapper.wrap_code(routine)
+        else:
+            f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr))
 
         return f
 

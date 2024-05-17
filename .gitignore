@@ -5,3 +5,4 @@ __pycache__
 *.egg-info/
 .doit.db*
 _build/
+/.hypothesis/

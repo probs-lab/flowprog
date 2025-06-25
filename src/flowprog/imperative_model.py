@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from rdflib import URIRef
 import sympy as sy
 from sympy import S
+import numpy as np
 import pandas as pd
 import logging
 
@@ -692,6 +693,13 @@ class Model:
             if missing_params:
                 raise ValueError("Missing parameters: %s" % missing_params)
             values = func(**relevant_data)
+            # Convert to float if it's a 0-dimensional array. These seem to
+            # arise from Piecewise expressions, and can cause trouble in the
+            # outputs.
+            values = [
+                float(x) if isinstance(x, np.ndarray) and x.ndim == 0 else x
+                for x in values
+            ]
             return dict(zip(index, values))
 
         return wrapper

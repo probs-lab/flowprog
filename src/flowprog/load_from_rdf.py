@@ -7,15 +7,11 @@ from itertools import groupby
 from rdflib import Namespace
 
 
-PROBS_SYS = Namespace("http://ukfires.org/probs/system/")
-PROBS_RECIPE = Namespace("https://ukfires.org/probs/ontology/recipe/")
-PROBS = Namespace("https://ukfires.org/probs/ontology/")
-SYS = Namespace("http://c-thru.org/analyses/calculator/system/")
+PROBS_RECIPE = Namespace("http://w3id.org/probs-lab/process-recipe#")
+PROBS = Namespace("http://w3id.org/probs-lab/ontology#")
 QUANTITYKIND = Namespace("http://qudt.org/vocab/quantitykind/")
 
 NAMESPACES = {
-    "sys": SYS,
-    "probssys": PROBS_SYS,
     "probs": PROBS,
     "recipe": PROBS_RECIPE,
 }

@@ -149,7 +149,8 @@ def query_object_types(rdfox, model_uri):
 
 def _create_object_type_object(item):
     """Define an object type for query results data."""
-    return item
+    # Convert to tuple from rdflib.query.ResultRow to ensure it can be pickled.
+    return item.asdict()
 
 
 def get_object_types(rdfox, model_uri):
@@ -198,8 +199,8 @@ def build_model(object_types: list, recipe_builders: list, **kwargs) -> tuple[Mo
     objects = [
         Object(
             id=strip_uri(x["object"]),
-            metric=x["metric"] or QUANTITYKIND.Mass,
-            has_market=bool(x["hasMarket"]),
+            metric=x.get("metric", QUANTITYKIND.Mass),
+            has_market=bool(x.get("hasMarket")),
         )
         for x in object_types
     ]

@@ -305,8 +305,23 @@ class Model:
         if len(processes) == 1:
             # FIXME: this should warn that the allocate_forwards value will be
             # ignored if there is only one process.
+            process_id = self.processes[processes[0]].id
+            if object_id in allocate_forwards:
+                # with only one consuming process, it is not required to include
+                # the coefficients -- but check them if they are given
+                alphas = allocate_forwards[object_id]
+                if process_id not in alphas:
+                    raise ValueError(f"Process {process_id}, which is the only consumer of {object_id}, should be included in allocation coefficients")
+                elif alphas[process_id] != 1:
+                    # this is what will happen in the model; FIXME could instead honour the allocation coefficient given
+                    raise ValueError(f"Process {process_id}, which is the only consumer of {object_id}, should have an allocation coefficient of 1, "
+                                     f"but it is set to {alphas[process_id]}")
+                for k in alphas.keys():
+                    if alphas[k] != 0 and not self._lookup_process(k):
+                        # raises error by side effect
+                        pass
             return self.push_process_input(
-                self.processes[processes[0]].id,
+                process_id,
                 object_id,
                 consumption_value,
                 until_objects=until_objects,

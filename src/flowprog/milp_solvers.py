@@ -159,20 +159,113 @@ class PythonMIPBackend(SolverBackend):
         # Build objective function
         obj_expr = 0
 
-        # Linear terms
-        if milp_model.objective.linear_terms:
-            obj_expr += self.mip.xsum(
-                coef * mip_vars[var_name]
-                for var_name, coef in milp_model.objective.linear_terms.items()
-            )
-
-        # Quadratic terms
+        # Check if we have quadratic terms and if solver supports them
         if milp_model.objective.quadratic_terms:
-            for quad_term in milp_model.objective.quadratic_terms:
-                obj_expr += (
-                    quad_term.coefficient *
-                    mip_vars[quad_term.var1] *
-                    mip_vars[quad_term.var2]
+            solver = config.solver_name.lower() if config.solver_name else "cbc"
+
+            if solver in ["gurobi", "cplex"]:
+                # These solvers support native quadratic objectives
+                # Add linear terms first
+                if milp_model.objective.linear_terms:
+                    obj_expr += self.mip.xsum(
+                        coef * mip_vars[var_name]
+                        for var_name, coef in milp_model.objective.linear_terms.items()
+                    )
+
+                # Add quadratic terms
+                for quad_term in milp_model.objective.quadratic_terms:
+                    var1 = mip_vars[quad_term.var1]
+                    var2 = mip_vars[quad_term.var2]
+                    coef = quad_term.coefficient
+
+                    # Quadratic term: coef * var1 * var2
+                    obj_expr += coef * var1 * var2
+
+            else:
+                # CBC doesn't support quadratic - need to linearize or approximate
+                # For sum of squares objective: Σ w_i * x_i²
+                # We can use L1 approximation instead: Σ w_i * |x_i|
+                # Or just use linear objective with absolute values
+
+                import warnings
+                warnings.warn(
+                    f"Solver '{solver}' does not support quadratic objectives. "
+                    "Falling back to linear approximation (L1 norm instead of L2). "
+                    "For better results, install Gurobi or CPLEX.",
+                    UserWarning
+                )
+
+                # For L1 approximation of (x - target)²:
+                # The objective is: Σ w_i * x_i² - 2*w_i*target_i*x_i + constant
+                # We need to reconstruct (x - target) and minimize |x - target|
+
+                # Group quadratic and linear terms by variable
+                error_terms = {}  # var_name -> (weight, target)
+
+                for quad_term in milp_model.objective.quadratic_terms:
+                    if quad_term.var1 == quad_term.var2:
+                        var_name = quad_term.var1
+                        weight = quad_term.coefficient
+
+                        # Find corresponding linear term to extract target
+                        linear_coef = milp_model.objective.linear_terms.get(var_name, 0.0)
+                        # linear_coef = -2 * weight * target
+                        # So: target = -linear_coef / (2 * weight)
+                        if weight != 0:
+                            target = -linear_coef / (2.0 * weight)
+                            error_terms[var_name] = (weight, target)
+
+                # Create auxiliary variables for |x - target|
+                for var_name, (weight, target) in error_terms.items():
+                    var = mip_vars[var_name]
+
+                    # Create auxiliary variable for error = x - target
+                    error_var_name = f"error_{var_name}"
+                    error_var = model.add_var(
+                        name=error_var_name,
+                        var_type=self.mip.CONTINUOUS,
+                        lb=-self.mip.INF
+                    )
+
+                    # error = x - target
+                    model.add_constr(error_var == var - target, name=f"def_{error_var_name}")
+
+                    # Create auxiliary variable for |error|
+                    abs_error_var_name = f"abs_error_{var_name}"
+                    abs_error_var = model.add_var(
+                        name=abs_error_var_name,
+                        var_type=self.mip.CONTINUOUS,
+                        lb=0
+                    )
+
+                    # |error| constraints
+                    model.add_constr(abs_error_var >= error_var, name=f"{abs_error_var_name}_pos")
+                    model.add_constr(abs_error_var >= -error_var, name=f"{abs_error_var_name}_neg")
+
+                    # Add to objective: weight * |error|
+                    obj_expr += weight * abs_error_var
+
+                # Clear the quadratic and linear terms that we've handled
+                # (they've been replaced with L1 approximation)
+                handled_vars = set(error_terms.keys())
+                remaining_linear = {
+                    var_name: coef
+                    for var_name, coef in milp_model.objective.linear_terms.items()
+                    if var_name not in handled_vars
+                }
+
+                # Add any remaining linear terms
+                if remaining_linear:
+                    obj_expr += self.mip.xsum(
+                        coef * mip_vars[var_name]
+                        for var_name, coef in remaining_linear.items()
+                    )
+        else:
+            # No quadratic terms - just use linear objective
+            if milp_model.objective.linear_terms:
+                obj_expr += self.mip.xsum(
+                    coef * mip_vars[var_name]
+                    for var_name, coef in milp_model.objective.linear_terms.items()
                 )
 
         model.objective = obj_expr
@@ -214,14 +307,14 @@ class PythonMIPBackend(SolverBackend):
                 status=solution_status,
                 objective_value=model.objective_value,
                 variables=solution_vars,
-                gap=model.gap,
-                solve_time=model.total_time,
-                num_nodes=model.num_solutions
+                gap=model.gap if hasattr(model, 'gap') else None,
+                solve_time=None,  # Python-MIP doesn't expose solve time easily
+                num_nodes=model.num_solutions if hasattr(model, 'num_solutions') else None
             )
         else:
             return SolverSolution(
                 status=solution_status,
-                solve_time=model.total_time
+                solve_time=None
             )
 
     def find_multiple_solutions(

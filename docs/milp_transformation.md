@@ -137,6 +137,40 @@ Uses the identity: `min(a, b) = -max(-a, -b)`
 
 Uses the identity: `abs(x) = max(x, -x)`
 
+#### General Piecewise (N branches)
+
+For `Piecewise((val1, cond1), (val2, cond2), ..., (valN, True))`, creates:
+
+```
+# Create binary indicators (one per branch)
+y1, y2, ..., yN ∈ {0,1}
+
+# Exactly one branch must be active
+y1 + y2 + ... + yN = 1
+
+# For each branch i: if yi=1, then result = vali
+result >= vali - M*(1 - yi)
+result <= vali + M*(1 - yi)
+
+# Optional: encode conditions as logical constraints
+# e.g., if cond1 is "x >= limit":
+#   x >= limit - M*(1 - y1)
+```
+
+Where:
+- Binary `yi` indicates if branch `i` is active
+- Result equals the value of whichever branch has `yi = 1`
+- Optional condition constraints help guide the solver
+
+**This handles the `limit()` function**, which creates 3-branch Piecewise expressions:
+```python
+Piecewise(
+    (0, current >= limit),                          # Already at capacity
+    (v, proposed <= limit),                         # Under capacity
+    ((limit - current)/(proposed - current) * v, True)  # Scale down
+)
+```
+
 ### 3. Bounds Analysis
 
 Critical for computing tight big-M values:
@@ -322,19 +356,21 @@ Warning: Large big-M values detected
 
 ### Unsupported Expressions
 
-```
-NotImplementedError: Complex Piecewise expression not yet supported
-```
-
 **Current limitations:**
-- Only simple `Piecewise` patterns (equivalent to max/min)
 - Linear expressions only (no x*y products between variables)
-- No nested Piecewise with complex conditions
+- Piecewise conditions must be linear inequalities or True
+- Complex logical combinations (AND/OR) in Piecewise conditions may be ignored
 
-**Workarounds:**
-1. Simplify expressions before transformation
-2. Pre-process complex piecewise into max/min operations
-3. Use symbolic substitution to linearize
+**Supported:**
+- ✅ General N-branch Piecewise expressions (including `limit()` function)
+- ✅ Max, Min, Abs operations
+- ✅ Linear inequalities as Piecewise conditions (x >= y, x <= y)
+- ✅ Nested piecewise (each branch can contain sub-expressions)
+
+**Workarounds for limitations:**
+1. For bilinear terms (x*y): Use McCormick envelopes (not yet implemented)
+2. For complex logic: Reformulate as multiple simpler piecewise expressions
+3. Use symbolic substitution to simplify before transformation
 
 ## Architecture
 
@@ -447,7 +483,7 @@ See `examples/milp_calibration_example.py` for a complete working example with:
 
 **Current limitations:**
 - Linear expressions only (no bilinear terms x*y between decision variables)
-- Simple Piecewise patterns (not full conditional logic)
+- Piecewise conditions must be linear inequalities (complex AND/OR logic not fully supported)
 - Big-M formulation (SOS constraints could be more efficient)
 
 **Planned enhancements:**

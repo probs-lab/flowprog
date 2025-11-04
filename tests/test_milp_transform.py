@@ -241,6 +241,57 @@ class TestPiecewiseLinearizer:
         binary_vars = [v for v in milp_model.variables.values() if v.is_binary]
         assert len(binary_vars) >= 1
 
+    def test_three_branch_piecewise(self):
+        """Test linearization of 3-branch piecewise (like from limit function)."""
+        x = sy.Symbol("x")
+        limit_val = sy.Symbol("limit")
+        value = sy.Symbol("v")
+
+        analyzer = BoundsAnalyzer({
+            x: (0.0, 100.0),
+            limit_val: (20.0, 50.0),
+            value: (0.0, 30.0)
+        })
+        linearizer = PiecewiseLinearizer(analyzer)
+
+        milp_model = MILPModel()
+        milp_model.variable_mapping[x] = "x"
+        milp_model.variable_mapping[limit_val] = "limit"
+        milp_model.variable_mapping[value] = "v"
+
+        milp_model.add_variable(MILPVariable(name="x", lower_bound=0.0, upper_bound=100.0))
+        milp_model.add_variable(MILPVariable(name="limit", lower_bound=20.0, upper_bound=50.0))
+        milp_model.add_variable(MILPVariable(name="v", lower_bound=0.0, upper_bound=30.0))
+
+        # Simulate the limit() function's piecewise pattern:
+        # Piecewise((0, x >= limit), (v, x + v <= limit), (scaling_factor * v, True))
+        # Simplified version for testing
+        piecewise_expr = sy.Piecewise(
+            (sy.Integer(0), x >= limit_val),           # Already at limit
+            (value, x + value <= limit_val),           # Under limit
+            (value / 2, True),                         # Scale down (simplified)
+            evaluate=False
+        )
+
+        result_var = linearizer.linearize_piecewise(piecewise_expr, milp_model)
+
+        # Should create result variable
+        assert result_var in milp_model.variables
+        assert milp_model.variables[result_var].is_auxiliary
+
+        # Should create 3 binary variables (one per branch)
+        binary_vars = [v for v in milp_model.variables.values() if v.is_binary]
+        # At least 3 binaries for the piecewise (could be more from value/2 processing)
+        assert len(binary_vars) >= 3
+
+        # Should create "exactly one branch" constraint
+        one_branch_constraints = [c for c in milp_model.constraints if "one_branch" in c.name]
+        assert len(one_branch_constraints) == 1
+
+        # Should have constraints for each branch
+        branch_constraints = [c for c in milp_model.constraints if "branch" in c.name]
+        assert len(branch_constraints) >= 6  # At least 2 per branch (lower + upper)
+
     def test_max_two_linearization(self):
         """Test linearization of max(expr1, expr2)."""
         x = sy.Symbol("x")

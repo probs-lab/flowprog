@@ -71,6 +71,16 @@ class TestSimpleChain:
         with pytest.raises(ValueError):
             m.push_process_input("M1", "does not exist", 3)
 
+    def test_pull_process_output_error_wrong_object(self, m):
+        """Test that pull_process_output raises error when process doesn't produce the object."""
+        with pytest.raises(ValueError, match="Process 'M1' does not produce object 'in'"):
+            m.pull_process_output("M1", "in", 3)
+
+    def test_push_process_input_error_wrong_object(self, m):
+        """Test that push_process_input raises error when process doesn't consume the object."""
+        with pytest.raises(ValueError, match="Process 'M1' does not consume object 'out'"):
+            m.push_process_input("M1", "out", 3)
+
 
 class TestTwoProducersAllocateBackwards:
     @pytest.fixture

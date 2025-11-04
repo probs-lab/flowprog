@@ -397,6 +397,12 @@ class Model:
         j = self._lookup_process(process_id)
         if object_id is not None:
             i = self._lookup_object(object_id)
+            # Validate that the process actually produces this object
+            if object_id not in self.processes[j].produces:
+                raise ValueError(
+                    f"Process '{process_id}' does not produce object '{object_id}'. "
+                    f"This process produces: {self.processes[j].produces}"
+                )
             activity = value / self.S[i, j]
         else:
             activity = value
@@ -481,6 +487,12 @@ class Model:
         j = self._lookup_process(process_id)
         if object_id is not None:
             i = self._lookup_object(object_id)
+            # Validate that the process actually consumes this object
+            if object_id not in self.processes[j].consumes:
+                raise ValueError(
+                    f"Process '{process_id}' does not consume object '{object_id}'. "
+                    f"This process consumes: {self.processes[j].consumes}"
+                )
             activity = value / self.U[i, j]
         else:
             activity = value

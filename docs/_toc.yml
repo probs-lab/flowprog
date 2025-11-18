@@ -5,6 +5,7 @@ format: jb-book
 root: intro
 chapters:
 - file: theory
+- file: advanced-patterns
 - file: api
   sections:
     - file: api-model

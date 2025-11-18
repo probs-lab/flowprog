@@ -7,25 +7,12 @@ let currentStep = -1;
 let isPlaying = false;
 let playInterval = null;
 let savedPositions = null; // Save node positions after first layout
+let selectedItem = null; // Track selected item: {type: 'process'|'flow', id: string, ...}
+let globalEdgeMinMax = null; // Global min/max for edge width scaling
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded');
-
-    // Check initial panel state
-    const panel = document.getElementById('details-panel');
-    if (panel) {
-        console.log('Initial panel state:');
-        console.log('  className:', panel.className);
-        console.log('  classList:', panel.classList);
-        console.log('  classList.contains("collapsed"):', panel.classList.contains('collapsed'));
-        const style = window.getComputedStyle(panel);
-        console.log('  computed width:', style.width);
-        console.log('  computed overflow:', style.overflow);
-    } else {
-        console.error('Panel element not found on page load!');
-    }
-
     initializeCytoscape();
     loadStepsData();
 });
@@ -159,11 +146,11 @@ function initializeCytoscape() {
         loadFlowDetails(source, target, material);
     });
 
-    // Double-click to deselect
+    // Click on background to clear selection
     cy.on('tap', function(evt) {
         if (evt.target === cy) {
-            console.log('Background clicked, closing panel');
-            closePanel();
+            console.log('Background clicked, clearing selection');
+            clearSelection();
         }
     });
 
@@ -338,32 +325,8 @@ function displayProcessDetails(data) {
 
     content.innerHTML = html;
 
-    // Show panel
-    console.log('Removing collapsed class from panel...');
-    console.log('Panel classes before:', panel.className);
-    console.log('Panel classList contains collapsed?', panel.classList.contains('collapsed'));
-
-    // Get computed styles
-    const computedStyle = window.getComputedStyle(panel);
-    console.log('Panel computed width before:', computedStyle.width);
-    console.log('Panel computed overflow before:', computedStyle.overflow);
-    console.log('Panel computed display:', computedStyle.display);
-
-    panel.classList.remove('collapsed');
-
-    console.log('Panel classes after:', panel.className);
-    console.log('Panel classList contains collapsed after?', panel.classList.contains('collapsed'));
-
-    // Check computed styles after
-    const computedStyleAfter = window.getComputedStyle(panel);
-    console.log('Panel computed width after:', computedStyleAfter.width);
-    console.log('Panel computed transform after:', computedStyleAfter.transform);
-    console.log('Panel offsetWidth:', panel.offsetWidth);
-    console.log('Panel scrollHeight:', panel.scrollHeight);
-
     // Render math
     renderMath();
-    console.log('Process details displayed successfully');
 }
 
 // Display flow details in panel
@@ -402,9 +365,6 @@ function displayFlowDetails(data) {
     `;
 
     content.innerHTML = html;
-
-    // Show panel
-    panel.classList.remove('collapsed');
 
     // Render math
     renderMath();
@@ -522,10 +482,20 @@ function renderExpression(analysis) {
 }
 
 // Utility functions
-function closePanel() {
-    const panel = document.getElementById('details-panel');
-    panel.classList.add('collapsed');
+function clearSelection() {
+    selectedItem = null;
     cy.elements().unselect();
+
+    // Show empty state in panel
+    const content = document.getElementById('panel-content');
+    const title = document.getElementById('panel-title');
+    title.textContent = 'Details';
+    content.innerHTML = `
+        <div class="empty-state">
+            <div class="empty-state-icon">📊</div>
+            <p>Click on a process or flow to see details</p>
+        </div>
+    `;
 }
 
 function fitGraph() {
@@ -545,7 +515,6 @@ function resetLayout() {
 function showError(message) {
     const content = document.getElementById('panel-content');
     content.innerHTML = `<div class="error">Error: ${escapeHtml(message)}</div>`;
-    document.getElementById('details-panel').classList.remove('collapsed');
 }
 
 function escapeHtml(text) {
@@ -579,6 +548,9 @@ async function loadStepsData() {
         slider.max = lastStep;
         slider.value = lastStep;
 
+        // Compute global edge min/max across all steps for consistent width scaling
+        await computeGlobalEdgeMinMax();
+
         // ALWAYS load the last step first to establish a consistent layout
         // This ensures all nodes get positioned even if they have no edges in early steps
         await loadGraphDataAtStep(lastStep, true); // true = is initial load
@@ -591,6 +563,35 @@ async function loadStepsData() {
     } catch (error) {
         console.error('Error loading steps:', error);
         showError('Failed to load time-travel steps');
+    }
+}
+
+async function computeGlobalEdgeMinMax() {
+    // Fetch all steps and find global min/max edge values
+    const allFlowValues = [];
+
+    for (let step = 0; step < stepsData.length; step++) {
+        try {
+            const response = await fetch(`/api/graph/${step}`);
+            const data = await response.json();
+
+            for (const edge of data.edges) {
+                const numericValue = edge.data.numeric_value;
+                if (numericValue !== null && numericValue !== undefined && numericValue > 0) {
+                    allFlowValues.push(numericValue);
+                }
+            }
+        } catch (error) {
+            console.error(`Error fetching graph for step ${step}:`, error);
+        }
+    }
+
+    if (allFlowValues.length > 0) {
+        globalEdgeMinMax = {
+            min: Math.min(...allFlowValues),
+            max: Math.max(...allFlowValues)
+        };
+        console.log('Global edge min/max:', globalEdgeMinMax);
     }
 }
 
@@ -665,26 +666,24 @@ async function loadGraphDataAtStep(step, isInitialLoad = false) {
 }
 
 function applyEdgeWidths() {
-    // Get all flow values to calculate min/max for normalization
-    const flowValues = [];
-    cy.edges().forEach(edge => {
-        const numericValue = edge.data('numeric_value');
-        if (numericValue !== null && numericValue !== undefined && numericValue > 0) {
-            flowValues.push(numericValue);
-        }
-    });
+    // Use global min/max for consistent edge widths across all steps
+    if (!globalEdgeMinMax) {
+        // Fallback: use default width if global min/max not computed
+        cy.edges().forEach(edge => {
+            edge.style('width', 3);
+        });
+        return;
+    }
 
-    if (flowValues.length === 0) return;
-
-    const minValue = Math.min(...flowValues);
-    const maxValue = Math.max(...flowValues);
+    const minValue = globalEdgeMinMax.min;
+    const maxValue = globalEdgeMinMax.max;
     const range = maxValue - minValue;
 
-    // Set edge widths based on normalized flow values
+    // Set edge widths based on normalized flow values using global min/max
     cy.edges().forEach(edge => {
         const numericValue = edge.data('numeric_value');
         if (numericValue !== null && numericValue !== undefined && numericValue > 0) {
-            // Normalize to 1-10 pixel range
+            // Normalize to 1-10 pixel range using global scale
             let width;
             if (range > 0) {
                 width = 1 + ((numericValue - minValue) / range) * 9;
@@ -737,6 +736,21 @@ function goToStep(step) {
 
     // Load graph for this step
     loadGraphDataAtStep(currentStep);
+
+    // Refresh the selected item's details at this step
+    if (selectedItem) {
+        refreshSelectedItem();
+    }
+}
+
+function refreshSelectedItem() {
+    if (!selectedItem) return;
+
+    if (selectedItem.type === 'process') {
+        loadProcessDetails(selectedItem.id);
+    } else if (selectedItem.type === 'flow') {
+        loadFlowDetails(selectedItem.source, selectedItem.target, selectedItem.material);
+    }
 }
 
 function previousStep() {
@@ -789,10 +803,11 @@ function togglePlayPause() {
     }
 }
 
-// Override the original loadProcessDetails to use current step
-const originalLoadProcessDetails = loadProcessDetails;
 async function loadProcessDetails(processId) {
     try {
+        // Track what's selected
+        selectedItem = { type: 'process', id: processId };
+
         console.log(`Fetching process details for: ${processId} at step ${currentStep}`);
         const response = await fetch(`/api/process/${currentStep}/${encodeURIComponent(processId)}`);
         const data = await response.json();
@@ -812,10 +827,11 @@ async function loadProcessDetails(processId) {
     }
 }
 
-// Override the original loadFlowDetails to use current step
-const originalLoadFlowDetails = loadFlowDetails;
 async function loadFlowDetails(source, target, material) {
     try {
+        // Track what's selected
+        selectedItem = { type: 'flow', source, target, material };
+
         const response = await fetch(`/api/flow/${currentStep}/${encodeURIComponent(source)}/${encodeURIComponent(target)}/${encodeURIComponent(material)}`);
         const data = await response.json();
 

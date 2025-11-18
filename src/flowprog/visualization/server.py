@@ -151,7 +151,13 @@ class VisualizationServer:
         # Get flows from the model
         try:
             flows_df = self.model.to_flows(self.recipe_data)
+        except (KeyError, AttributeError) as e:
+            # Early steps might not have complete model state for flow generation
+            # This is expected behavior - just return no edges
+            print(f"Note: Cannot generate flows at this step: {e}")
+            flows_df = None
 
+        if flows_df is not None:
             for _, row in flows_df.iterrows():
                 source = row['source']
                 target = row['target']
@@ -189,8 +195,6 @@ class VisualizationServer:
                     },
                     'classes': 'flow'
                 })
-        except Exception as e:
-            print(f"Warning: Could not generate flows: {e}")
 
         # Restore original values if we swapped them
         if original_values is not None:

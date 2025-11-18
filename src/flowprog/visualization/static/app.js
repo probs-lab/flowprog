@@ -6,6 +6,7 @@ let stepsData = [];
 let currentStep = -1;
 let isPlaying = false;
 let playInterval = null;
+let savedPositions = null; // Save node positions after first layout
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -610,17 +611,41 @@ async function loadGraphDataAtStep(step) {
 
         console.log('Elements added to Cytoscape');
 
-        // Run layout
-        cy.layout({
-            name: 'dagre',
-            rankDir: 'LR',
-            nodeSep: 50,
-            rankSep: 100,
-            padding: 30
-        }).run();
+        // Handle layout and positions
+        if (savedPositions === null) {
+            // First time - run layout and save positions
+            const layout = cy.layout({
+                name: 'dagre',
+                rankDir: 'LR',
+                nodeSep: 50,
+                rankSep: 100,
+                padding: 30
+            });
 
-        // Fit to screen
-        cy.fit(null, 50);
+            layout.run();
+
+            // Wait for layout to complete, then save positions
+            layout.on('layoutstop', function() {
+                savedPositions = {};
+                cy.nodes().forEach(node => {
+                    savedPositions[node.id()] = node.position();
+                });
+                console.log('Node positions saved');
+            });
+
+            // Fit to screen
+            cy.fit(null, 50);
+        } else {
+            // Restore saved positions
+            cy.nodes().forEach(node => {
+                const savedPos = savedPositions[node.id()];
+                if (savedPos) {
+                    node.position(savedPos);
+                }
+            });
+            console.log('Node positions restored');
+        }
+
         console.log('Graph layout complete');
 
     } catch (error) {

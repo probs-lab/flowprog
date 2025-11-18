@@ -5,6 +5,22 @@ let graphData = null;
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM Content Loaded');
+
+    // Check initial panel state
+    const panel = document.getElementById('details-panel');
+    if (panel) {
+        console.log('Initial panel state:');
+        console.log('  className:', panel.className);
+        console.log('  classList:', panel.classList);
+        console.log('  classList.contains("collapsed"):', panel.classList.contains('collapsed'));
+        const style = window.getComputedStyle(panel);
+        console.log('  computed width:', style.width);
+        console.log('  computed overflow:', style.overflow);
+    } else {
+        console.error('Panel element not found on page load!');
+    }
+
     initializeCytoscape();
     loadGraphData();
 });
@@ -307,8 +323,24 @@ function displayProcessDetails(data) {
     // Show panel
     console.log('Removing collapsed class from panel...');
     console.log('Panel classes before:', panel.className);
+    console.log('Panel classList contains collapsed?', panel.classList.contains('collapsed'));
+
+    // Get computed styles
+    const computedStyle = window.getComputedStyle(panel);
+    console.log('Panel computed width before:', computedStyle.width);
+    console.log('Panel computed overflow before:', computedStyle.overflow);
+    console.log('Panel computed display:', computedStyle.display);
+
     panel.classList.remove('collapsed');
+
     console.log('Panel classes after:', panel.className);
+    console.log('Panel classList contains collapsed after?', panel.classList.contains('collapsed'));
+
+    // Check computed styles after
+    const computedStyleAfter = window.getComputedStyle(panel);
+    console.log('Panel computed width after:', computedStyleAfter.width);
+    console.log('Panel offsetWidth:', panel.offsetWidth);
+    console.log('Panel scrollHeight:', panel.scrollHeight);
 
     // Render math
     renderMath();

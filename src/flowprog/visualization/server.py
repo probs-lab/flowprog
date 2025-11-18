@@ -308,9 +308,14 @@ class VisualizationServer:
                 return str(result)
 
             else:  # mode == 'full'
-                # Substitute all known values (recipe + parameters)
+                # First substitute intermediates, then substitute all parameters
                 all_params = {**self.recipe_data, **self.parameter_values}
-                result = expr.subs(all_params)
+
+                # Use model's eval_intermediates to substitute intermediate symbols (x0, x1, etc.)
+                if hasattr(self.model, 'eval_intermediates'):
+                    result = self.model.eval_intermediates(expr, all_params)
+                else:
+                    result = expr.subs(all_params)
 
                 if result.is_number:
                     return f"{float(result):.4g}"

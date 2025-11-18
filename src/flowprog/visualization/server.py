@@ -313,7 +313,11 @@ class VisualizationServer:
 
                 # Use model's eval_intermediates to substitute intermediate symbols (x0, x1, etc.)
                 if hasattr(self.model, 'eval_intermediates'):
+                    # eval_intermediates substitutes intermediates but doesn't substitute S/U/parameters
+                    # So we need to do both steps
                     result = self.model.eval_intermediates(expr, all_params)
+                    # Now substitute recipe and parameters into the result
+                    result = result.subs(all_params)
                 else:
                     result = expr.subs(all_params)
 
@@ -344,11 +348,37 @@ class VisualizationServer:
         except:
             pass
 
+        # Generate LaTeX for each mode
+        # Symbolic: original expression
+        symbolic_latex = sy.latex(expr)
+
+        # Recipe evaluated: substitute recipe coefficients
+        try:
+            recipe_expr = expr.subs(self.recipe_data)
+            recipe_latex = sy.latex(recipe_expr)
+        except:
+            recipe_latex = symbolic_latex
+
+        # Fully evaluated: substitute all parameters and intermediates
+        try:
+            all_params = {**self.recipe_data, **self.parameter_values}
+            if hasattr(self.model, 'eval_intermediates'):
+                fully_expr = self.model.eval_intermediates(expr, all_params)
+                fully_expr = fully_expr.subs(all_params)
+            else:
+                fully_expr = expr.subs(all_params)
+            fully_latex = sy.latex(fully_expr)
+        except:
+            fully_latex = recipe_latex
+
         return {
             'symbolic': self._evaluate_expression(expr, mode='symbolic'),
             'recipe_evaluated': recipe_evaluated,
             'fully_evaluated': self._evaluate_expression(expr, mode='full'),
-            'missing_coefficients': missing_coefficients
+            'missing_coefficients': missing_coefficients,
+            'symbolic_latex': symbolic_latex,
+            'recipe_latex': recipe_latex,
+            'fully_latex': fully_latex
         }
 
     def run(self, host='127.0.0.1', port=5000, debug=True):

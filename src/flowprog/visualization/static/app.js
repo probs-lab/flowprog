@@ -416,7 +416,7 @@ function renderExpression(analysis) {
                 <div class="expression-label">Expression (Fully Symbolic)</div>
                 <div class="expression-content">${escapeHtml(analysis.evaluation_modes.symbolic)}</div>
                 <div class="latex-content">
-                    $$${analysis.final_latex}$$
+                    $$${analysis.evaluation_modes.symbolic_latex}$$
                 </div>
                 <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
                     No substitution - shows model structure
@@ -427,7 +427,7 @@ function renderExpression(analysis) {
                 <div class="expression-label">Expression (Recipe Evaluated)</div>
                 <div class="expression-content">${escapeHtml(analysis.evaluation_modes.recipe_evaluated)}</div>
                 <div class="latex-content">
-                    $$${analysis.final_latex}$$
+                    $$${analysis.evaluation_modes.recipe_latex}$$
                 </div>
                 <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
                     Recipe coefficients (S, U) substituted
@@ -454,7 +454,7 @@ function renderExpression(analysis) {
                 <div class="expression-label">Expression (Fully Evaluated)</div>
                 <div class="expression-content">${escapeHtml(analysis.evaluation_modes.fully_evaluated)}</div>
                 <div class="latex-content">
-                    $$${analysis.final_latex}$$
+                    $$${analysis.evaluation_modes.fully_latex}$$
                 </div>
                 <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
                     All parameters and intermediates substituted

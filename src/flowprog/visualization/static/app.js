@@ -570,21 +570,23 @@ async function loadStepsData() {
         const response = await fetch('/api/steps');
         const data = await response.json();
         stepsData = data.steps;
-        currentStep = data.current_step;
+        const lastStep = Math.max(0, data.steps.length - 1);
 
-        console.log(`Loaded ${stepsData.length} steps, current step: ${currentStep}`);
+        console.log(`Loaded ${stepsData.length} steps`);
 
         // Initialize slider
         const slider = document.getElementById('step-slider');
-        slider.max = Math.max(0, stepsData.length - 1);
-        slider.value = currentStep;
+        slider.max = lastStep;
+        slider.value = lastStep;
 
-        // Update UI
+        // ALWAYS load the last step first to establish a consistent layout
+        // This ensures all nodes get positioned even if they have no edges in early steps
+        await loadGraphDataAtStep(lastStep, true); // true = is initial load
+
+        // Now set the current step to the last step
+        currentStep = lastStep;
         updateStepInfo();
         updateButtonStates();
-
-        // Load graph for current step
-        loadGraphDataAtStep(currentStep);
 
     } catch (error) {
         console.error('Error loading steps:', error);
@@ -592,7 +594,7 @@ async function loadStepsData() {
     }
 }
 
-async function loadGraphDataAtStep(step) {
+async function loadGraphDataAtStep(step, isInitialLoad = false) {
     try {
         console.log(`Loading graph data for step ${step}...`);
         const response = await fetch(`/api/graph/${step}`);
@@ -612,8 +614,8 @@ async function loadGraphDataAtStep(step) {
         console.log('Elements added to Cytoscape');
 
         // Handle layout and positions
-        if (savedPositions === null) {
-            // First time - run layout and save positions
+        if (isInitialLoad) {
+            // First time - run layout on complete graph and save positions
             const layout = cy.layout({
                 name: 'dagre',
                 rankDir: 'LR',
@@ -622,28 +624,36 @@ async function loadGraphDataAtStep(step) {
                 padding: 30
             });
 
-            layout.run();
-
-            // Wait for layout to complete, then save positions
-            layout.on('layoutstop', function() {
-                savedPositions = {};
-                cy.nodes().forEach(node => {
-                    savedPositions[node.id()] = node.position();
+            // Wait for layout to complete before saving positions
+            await new Promise((resolve) => {
+                layout.on('layoutstop', function() {
+                    savedPositions = {};
+                    cy.nodes().forEach(node => {
+                        const pos = node.position();
+                        // Deep copy the position to avoid reference issues
+                        savedPositions[node.id()] = { x: pos.x, y: pos.y };
+                    });
+                    console.log('Node positions saved:', Object.keys(savedPositions).length, 'nodes');
+                    resolve();
                 });
-                console.log('Node positions saved');
+                layout.run();
             });
 
-            // Fit to screen
+            // Fit to screen after layout
             cy.fit(null, 50);
         } else {
-            // Restore saved positions
-            cy.nodes().forEach(node => {
-                const savedPos = savedPositions[node.id()];
-                if (savedPos) {
-                    node.position(savedPos);
-                }
-            });
-            console.log('Node positions restored');
+            // Restore saved positions for all nodes
+            if (savedPositions) {
+                cy.nodes().forEach(node => {
+                    const savedPos = savedPositions[node.id()];
+                    if (savedPos) {
+                        node.position({ x: savedPos.x, y: savedPos.y });
+                    } else {
+                        console.warn('No saved position for node:', node.id());
+                    }
+                });
+                console.log('Node positions restored');
+            }
         }
 
         console.log('Graph layout complete');

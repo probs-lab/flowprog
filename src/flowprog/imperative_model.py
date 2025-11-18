@@ -683,12 +683,17 @@ class Model:
         symbol_value = self._values[symbol]
         return self.eval_intermediates(symbol_value)
 
-    def lambdify(self, data=None, expressions: Optional[dict]=None):
+    def lambdify(self, data=None, expressions: Optional[dict]=None, backend='numpy'):
         """Return function to evalute model.
 
         If `expressions` is given as a dictionary of sympy expression, the
         resulting function returns a similar dict with evaluated values.
         Otherwise the model's flows are used as the expressions.
+
+        Args:
+            data: Dictionary of fixed parameter values to substitute before compilation
+            expressions: Optional dictionary of sympy expressions to compile
+            backend: Compilation backend ('numpy' or 'jax')
 
         """
 
@@ -704,7 +709,12 @@ class Model:
             expr_values = expressions.values()
 
         # Function that returns a vector of values in same order as flows_sym
-        func = self._lambdify(expr_values, data)
+        if backend == 'jax':
+            func = self._lambdify_jax(expr_values, data)
+        elif backend == 'numpy':
+            func = self._lambdify(expr_values, data)
+        else:
+            raise ValueError(f"Unknown backend: {backend}. Use 'numpy' or 'jax'")
 
         # Create a friendlier wrapper
         str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
@@ -723,10 +733,18 @@ class Model:
             # Convert to float if it's a 0-dimensional array. These seem to
             # arise from Piecewise expressions, and can cause trouble in the
             # outputs.
-            values = [
-                float(x) if isinstance(x, np.ndarray) and x.ndim == 0 else x
-                for x in values
-            ]
+            if backend == 'numpy':
+                values = [
+                    float(x) if isinstance(x, np.ndarray) and x.ndim == 0 else x
+                    for x in values
+                ]
+            elif backend == 'jax':
+                # JAX arrays need different handling
+                import jax.numpy as jnp
+                values = [
+                    float(x) if isinstance(x, jnp.ndarray) and x.ndim == 0 else x
+                    for x in values
+                ]
             return dict(zip(index, values))
 
         return wrapper
@@ -761,6 +779,71 @@ class Model:
         f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr))
 
         return f
+
+    def _lambdify_jax(self, values, data_for_intermediates):
+        """Return JAX-compiled function to evaluate model.
+
+        This uses SymPy's built-in JAX backend and JAX's JIT compilation for performance.
+        JAX handles Piecewise expressions more efficiently than NumPy's select().
+        """
+        try:
+            import jax
+            import jax.numpy as jnp
+        except ImportError as e:
+            raise ImportError(
+                "JAX backend requires 'jax' and 'jaxlib' packages. "
+                "Install with: pip install jax jaxlib"
+            ) from e
+
+        # Substitute recipe in intermediates now (same as _lambdify)
+        subexpressions = [
+            (
+                sym,
+                expr.xreplace(data_for_intermediates).xreplace(data_for_intermediates),
+            )
+            for sym, expr, _ in self._intermediates
+        ]
+
+        # Substitute data in values too
+        values_substituted = [expr.xreplace(data_for_intermediates) for expr in values]
+
+        # Find free symbols (function arguments)
+        args = (
+            set()
+            .union(*(expr.free_symbols for expr in values_substituted))
+            .union(*(expr.free_symbols for _, expr in subexpressions))
+            .difference(sym for sym, _ in subexpressions)
+        )
+        # Indexed objects return themselves (e.g. S[1, 1]) as a free symbol as
+        # well as the base matrix (e.g. S)
+        args = {x for x in args if not isinstance(x, sy.Indexed)}
+        args = list(args)
+
+        # Use SymPy's lambdify with JAX backend and CSE
+        # This is similar to _lambdify but uses 'jax' module instead of default
+        f = sy.lambdify(
+            args,
+            values_substituted,
+            modules='jax',
+            cse=lambda expr: (subexpressions, expr)
+        )
+
+        # Store the original function's code info before JIT compilation
+        # This is needed because JIT-compiled functions don't have __code__ attribute
+        original_varnames = f.__code__.co_varnames
+        original_argcount = f.__code__.co_argcount
+
+        # Wrap with JIT compilation for performance
+        # Note: JIT compilation happens on first call
+        f_jit = jax.jit(f)
+
+        # Restore the code attributes for compatibility with lambdify wrapper
+        f_jit.__code__ = type('obj', (object,), {
+            'co_varnames': original_varnames,
+            'co_argcount': original_argcount
+        })()
+
+        return f_jit
 
     def to_flows(self, values, flow_ids=None):
         """Return flows data frame with variables substituted by `values`.

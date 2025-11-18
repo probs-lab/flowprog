@@ -66,8 +66,57 @@ class VisualizationServer:
             else:
                 return jsonify(self.parameter_values)
 
-    def _build_graph_data(self) -> Dict[str, Any]:
-        """Build the graph structure with nodes and edges."""
+        @self.app.route('/api/steps')
+        def get_steps():
+            """Get list of all time-travel steps."""
+            return jsonify(self._get_steps_list())
+
+        @self.app.route('/api/graph/<int:step>')
+        def get_graph_at_step(step):
+            """Get the graph structure at a specific step."""
+            return jsonify(self._build_graph_data(step=step))
+
+        @self.app.route('/api/process/<int:step>/<process_id>')
+        def get_process_details_at_step(step, process_id):
+            """Get detailed information about a process at a specific step."""
+            return jsonify(self._get_process_details(process_id, step=step))
+
+        @self.app.route('/api/flow/<int:step>/<source>/<target>/<material>')
+        def get_flow_details_at_step(step, source, target, material):
+            """Get detailed information about a flow at a specific step."""
+            return jsonify(self._get_flow_details(source, target, material, step=step))
+
+    def _get_steps_list(self) -> Dict[str, Any]:
+        """Get list of all time-travel steps."""
+        steps = []
+        for idx, (label, _, _) in enumerate(self.model.get_snapshots()):
+            steps.append({
+                'step': idx,
+                'label': label
+            })
+        return {
+            'steps': steps,
+            'current_step': len(steps) - 1 if steps else -1
+        }
+
+    def _build_graph_data(self, step: int = None) -> Dict[str, Any]:
+        """Build the graph structure with nodes and edges.
+
+        Args:
+            step: Optional step number for time-travel. If None, uses current state.
+        """
+        # If a step is specified, temporarily swap in that snapshot
+        original_values = None
+        original_intermediates = None
+        if step is not None:
+            snapshot = self.model.get_snapshot_at_step(step)
+            if snapshot:
+                _, values_snapshot, intermediates_snapshot = snapshot
+                original_values = self.model._values
+                original_intermediates = self.model._intermediates
+                self.model._values = values_snapshot
+                self.model._intermediates = intermediates_snapshot
+
         nodes = []
         edges = []
 
@@ -117,10 +166,11 @@ class VisualizationServer:
                 # Don't show long expressions on edges, just the material name
                 # Numeric values can be shown if short
                 edge_label = material
+                numeric_value = None
                 if display_value and len(display_value) < 15:
                     try:
                         # Only add value if it's numeric
-                        float(display_value)
+                        numeric_value = float(display_value)
                         edge_label = f"{material}\n{display_value}"
                     except (ValueError, TypeError):
                         # Symbolic expression, don't add to label
@@ -134,20 +184,43 @@ class VisualizationServer:
                         'label': edge_label,
                         'material': material,
                         'value': str(value),
-                        'evaluated_value': display_value
+                        'evaluated_value': display_value,
+                        'numeric_value': numeric_value  # For edge width calculation
                     },
                     'classes': 'flow'
                 })
         except Exception as e:
             print(f"Warning: Could not generate flows: {e}")
 
+        # Restore original values if we swapped them
+        if original_values is not None:
+            self.model._values = original_values
+            self.model._intermediates = original_intermediates
+
         return {
             'nodes': nodes,
             'edges': edges
         }
 
-    def _get_process_details(self, process_id: str) -> Dict[str, Any]:
-        """Get detailed information about a process including X and Y expressions."""
+    def _get_process_details(self, process_id: str, step: int = None) -> Dict[str, Any]:
+        """Get detailed information about a process including X and Y expressions.
+
+        Args:
+            process_id: ID of the process
+            step: Optional step number for time-travel. If None, uses current state.
+        """
+        # If a step is specified, temporarily swap in that snapshot
+        original_values = None
+        original_intermediates = None
+        if step is not None:
+            snapshot = self.model.get_snapshot_at_step(step)
+            if snapshot:
+                _, values_snapshot, intermediates_snapshot = snapshot
+                original_values = self.model._values
+                original_intermediates = self.model._intermediates
+                self.model._values = values_snapshot
+                self.model._intermediates = intermediates_snapshot
+
         try:
             # Find process index
             proc_idx = self.model._process_name_to_idx.get(process_id)
@@ -204,7 +277,7 @@ class VisualizationServer:
                     'value': self._evaluate_expression(flow_expr)
                 })
 
-            return {
+            result = {
                 'process_id': process_id,
                 'process_index': proc_idx,
                 'has_stock': process.has_stock,
@@ -217,10 +290,37 @@ class VisualizationServer:
             }
 
         except Exception as e:
-            return {'error': str(e)}
+            result = {'error': str(e)}
 
-    def _get_flow_details(self, source: str, target: str, material: str) -> Dict[str, Any]:
-        """Get detailed information about a flow."""
+        finally:
+            # Restore original values if we swapped them
+            if original_values is not None:
+                self.model._values = original_values
+                self.model._intermediates = original_intermediates
+
+        return result
+
+    def _get_flow_details(self, source: str, target: str, material: str, step: int = None) -> Dict[str, Any]:
+        """Get detailed information about a flow.
+
+        Args:
+            source: Source node ID
+            target: Target node ID
+            material: Material/object ID
+            step: Optional step number for time-travel. If None, uses current state.
+        """
+        # If a step is specified, temporarily swap in that snapshot
+        original_values = None
+        original_intermediates = None
+        if step is not None:
+            snapshot = self.model.get_snapshot_at_step(step)
+            if snapshot:
+                _, values_snapshot, intermediates_snapshot = snapshot
+                original_values = self.model._values
+                original_intermediates = self.model._intermediates
+                self.model._values = values_snapshot
+                self.model._intermediates = intermediates_snapshot
+
         try:
             # Determine if this is a production or consumption flow
             # Production: process -> object
@@ -264,7 +364,7 @@ class VisualizationServer:
             # Add evaluation modes
             analysis['evaluation_modes'] = self._get_expression_with_modes(flow_expr)
 
-            return {
+            result = {
                 'source': source,
                 'target': target,
                 'material': material,
@@ -275,7 +375,15 @@ class VisualizationServer:
             }
 
         except Exception as e:
-            return {'error': str(e)}
+            result = {'error': str(e)}
+
+        finally:
+            # Restore original values if we swapped them
+            if original_values is not None:
+                self.model._values = original_values
+                self.model._intermediates = original_intermediates
+
+        return result
 
     def _evaluate_expression(self, expr, mode='full') -> str:
         """

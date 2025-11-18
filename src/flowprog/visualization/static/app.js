@@ -2,6 +2,10 @@
 
 let cy; // Cytoscape instance
 let graphData = null;
+let stepsData = [];
+let currentStep = -1;
+let isPlaying = false;
+let playInterval = null;
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -22,7 +26,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     initializeCytoscape();
-    loadGraphData();
+    loadStepsData();
 });
 
 // Initialize Cytoscape graph
@@ -552,5 +556,243 @@ function escapeHtml(text) {
 function renderMath() {
     if (window.MathJax) {
         MathJax.typesetPromise().catch((err) => console.log('MathJax error:', err));
+    }
+}
+
+// ============================================================================
+// Time-Travel Debugger Functions
+// ============================================================================
+
+async function loadStepsData() {
+    try {
+        console.log('Loading steps data...');
+        const response = await fetch('/api/steps');
+        const data = await response.json();
+        stepsData = data.steps;
+        currentStep = data.current_step;
+
+        console.log(`Loaded ${stepsData.length} steps, current step: ${currentStep}`);
+
+        // Initialize slider
+        const slider = document.getElementById('step-slider');
+        slider.max = Math.max(0, stepsData.length - 1);
+        slider.value = currentStep;
+
+        // Update UI
+        updateStepInfo();
+        updateButtonStates();
+
+        // Load graph for current step
+        loadGraphDataAtStep(currentStep);
+
+    } catch (error) {
+        console.error('Error loading steps:', error);
+        showError('Failed to load time-travel steps');
+    }
+}
+
+async function loadGraphDataAtStep(step) {
+    try {
+        console.log(`Loading graph data for step ${step}...`);
+        const response = await fetch(`/api/graph/${step}`);
+        graphData = await response.json();
+        console.log('Graph data loaded:', graphData.nodes.length, 'nodes,', graphData.edges.length, 'edges');
+
+        // Clear existing graph
+        cy.elements().remove();
+
+        // Add elements to graph
+        cy.add(graphData.nodes);
+        cy.add(graphData.edges);
+
+        // Apply edge widths based on flow values
+        applyEdgeWidths();
+
+        console.log('Elements added to Cytoscape');
+
+        // Run layout
+        cy.layout({
+            name: 'dagre',
+            rankDir: 'LR',
+            nodeSep: 50,
+            rankSep: 100,
+            padding: 30
+        }).run();
+
+        // Fit to screen
+        cy.fit(null, 50);
+        console.log('Graph layout complete');
+
+    } catch (error) {
+        console.error('Error loading graph data:', error);
+        showError('Failed to load graph data');
+    }
+}
+
+function applyEdgeWidths() {
+    // Get all flow values to calculate min/max for normalization
+    const flowValues = [];
+    cy.edges().forEach(edge => {
+        const numericValue = edge.data('numeric_value');
+        if (numericValue !== null && numericValue !== undefined && numericValue > 0) {
+            flowValues.push(numericValue);
+        }
+    });
+
+    if (flowValues.length === 0) return;
+
+    const minValue = Math.min(...flowValues);
+    const maxValue = Math.max(...flowValues);
+    const range = maxValue - minValue;
+
+    // Set edge widths based on normalized flow values
+    cy.edges().forEach(edge => {
+        const numericValue = edge.data('numeric_value');
+        if (numericValue !== null && numericValue !== undefined && numericValue > 0) {
+            // Normalize to 1-10 pixel range
+            let width;
+            if (range > 0) {
+                width = 1 + ((numericValue - minValue) / range) * 9;
+            } else {
+                width = 5; // Default if all values are the same
+            }
+            edge.style('width', width);
+        } else {
+            edge.style('width', 2); // Default for symbolic/zero values
+        }
+    });
+}
+
+function updateStepInfo() {
+    const stepText = document.getElementById('step-text');
+    if (currentStep >= 0 && currentStep < stepsData.length) {
+        const stepData = stepsData[currentStep];
+        stepText.textContent = `Step ${currentStep + 1}/${stepsData.length}: ${stepData.label}`;
+    } else {
+        stepText.textContent = 'No steps available';
+    }
+}
+
+function updateButtonStates() {
+    const firstBtn = document.getElementById('first-step-btn');
+    const prevBtn = document.getElementById('prev-step-btn');
+    const nextBtn = document.getElementById('next-step-btn');
+    const lastBtn = document.getElementById('last-step-btn');
+
+    const isFirstStep = currentStep <= 0;
+    const isLastStep = currentStep >= stepsData.length - 1;
+
+    firstBtn.disabled = isFirstStep;
+    prevBtn.disabled = isFirstStep;
+    nextBtn.disabled = isLastStep;
+    lastBtn.disabled = isLastStep;
+}
+
+function goToStep(step) {
+    if (step < 0 || step >= stepsData.length) return;
+
+    currentStep = step;
+
+    // Update slider
+    document.getElementById('step-slider').value = currentStep;
+
+    // Update UI
+    updateStepInfo();
+    updateButtonStates();
+
+    // Load graph for this step
+    loadGraphDataAtStep(currentStep);
+}
+
+function previousStep() {
+    if (currentStep > 0) {
+        goToStep(currentStep - 1);
+    }
+}
+
+function nextStep() {
+    if (currentStep < stepsData.length - 1) {
+        goToStep(currentStep + 1);
+    }
+}
+
+function goToFirstStep() {
+    goToStep(0);
+}
+
+function goToLastStep() {
+    goToStep(stepsData.length - 1);
+}
+
+function sliderChanged(value) {
+    goToStep(parseInt(value));
+}
+
+function togglePlayPause() {
+    const btn = document.getElementById('play-pause-btn');
+
+    if (isPlaying) {
+        // Pause
+        isPlaying = false;
+        clearInterval(playInterval);
+        playInterval = null;
+        btn.textContent = '▶ Play';
+    } else {
+        // Play
+        isPlaying = true;
+        btn.textContent = '⏸ Pause';
+
+        // Auto-advance every 1.5 seconds
+        playInterval = setInterval(() => {
+            if (currentStep < stepsData.length - 1) {
+                nextStep();
+            } else {
+                // Reached the end, stop playing
+                togglePlayPause();
+            }
+        }, 1500);
+    }
+}
+
+// Override the original loadProcessDetails to use current step
+const originalLoadProcessDetails = loadProcessDetails;
+async function loadProcessDetails(processId) {
+    try {
+        console.log(`Fetching process details for: ${processId} at step ${currentStep}`);
+        const response = await fetch(`/api/process/${currentStep}/${encodeURIComponent(processId)}`);
+        const data = await response.json();
+        console.log('Process details received:', data);
+
+        if (data.error) {
+            console.error('API returned error:', data.error);
+            showError(data.error);
+            return;
+        }
+
+        displayProcessDetails(data);
+
+    } catch (error) {
+        console.error('Error loading process details:', error);
+        showError('Failed to load process details');
+    }
+}
+
+// Override the original loadFlowDetails to use current step
+const originalLoadFlowDetails = loadFlowDetails;
+async function loadFlowDetails(source, target, material) {
+    try {
+        const response = await fetch(`/api/flow/${currentStep}/${encodeURIComponent(source)}/${encodeURIComponent(target)}/${encodeURIComponent(material)}`);
+        const data = await response.json();
+
+        if (data.error) {
+            showError(data.error);
+            return;
+        }
+
+        displayFlowDetails(data);
+
+    } catch (error) {
+        console.error('Error loading flow details:', error);
+        showError('Failed to load flow details');
     }
 }

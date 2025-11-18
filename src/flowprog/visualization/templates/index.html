@@ -97,6 +97,93 @@
             background: #2980b9;
         }
 
+        #time-travel-controls {
+            position: absolute;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            min-width: 600px;
+        }
+
+        .time-controls-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .time-controls-row button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            min-width: 80px;
+        }
+
+        .time-controls-row button:hover:not(:disabled) {
+            background: #2980b9;
+        }
+
+        .time-controls-row button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        #step-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            outline: none;
+            -webkit-appearance: none;
+            background: #ecf0f1;
+        }
+
+        #step-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+        }
+
+        #step-slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+            border: none;
+        }
+
+        #step-info {
+            font-size: 0.9rem;
+            color: #2c3e50;
+            font-weight: 600;
+            text-align: center;
+            min-height: 40px;
+            background: #f8f9fa;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .step-label {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+            margin-bottom: 0.25rem;
+        }
+
         #details-panel {
             position: absolute;
             top: 0;
@@ -316,6 +403,22 @@
                 <div id="controls">
                     <button onclick="fitGraph()">Fit to Screen</button>
                     <button onclick="resetLayout()">Reset Layout</button>
+                </div>
+                <div id="time-travel-controls">
+                    <div class="time-controls-row">
+                        <button id="first-step-btn" onclick="goToFirstStep()" title="Go to first step">⏮ First</button>
+                        <button id="prev-step-btn" onclick="previousStep()" title="Previous step">⏪ Prev</button>
+                        <button id="play-pause-btn" onclick="togglePlayPause()" title="Play/Pause">▶ Play</button>
+                        <button id="next-step-btn" onclick="nextStep()" title="Next step">Next ⏩</button>
+                        <button id="last-step-btn" onclick="goToLastStep()" title="Go to last step">Last ⏭</button>
+                    </div>
+                    <div class="time-controls-row">
+                        <input type="range" id="step-slider" min="0" max="0" value="0" oninput="sliderChanged(this.value)">
+                    </div>
+                    <div id="step-info">
+                        <div class="step-label">Model Building Steps</div>
+                        <div id="step-text">Loading...</div>
+                    </div>
                 </div>
             </div>
 

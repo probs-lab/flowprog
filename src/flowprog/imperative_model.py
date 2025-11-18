@@ -100,6 +100,9 @@ class Model:
         self._intermediates: list[tuple[sy.Expr, sy.Expr, str]] = []
         self._intermediate_symbols = sy.numbered_symbols()
 
+        # Time-travel snapshots: list of (label, values_snapshot, intermediates_snapshot)
+        self._snapshots: list[tuple[str, dict, list]] = []
+
     def __repr__(self):
         return f"Model(processes={repr(self.processes)}, objects={repr(self.objects)})"
 
@@ -647,6 +650,9 @@ class Model:
             self._history.setdefault(symbol, [])
             self._history[symbol].append(label)
 
+        # Capture snapshot for time-travel debugging
+        self._capture_snapshot(label)
+
     def _create_intermediate(self, value: sy.Expr, description: str) -> sy.Expr:
         new_sym = next(self._intermediate_symbols)
         self._intermediates.append((new_sym, value, description))
@@ -655,6 +661,27 @@ class Model:
     def get_history(self, symbol: sy.Expr) -> list[str]:
         """Return history list for `symbol`."""
         return self._history.get(symbol, [])
+
+    def _capture_snapshot(self, label: str):
+        """Capture a snapshot of the current model state for time-travel debugging."""
+        # Deep copy the current values and intermediates
+        values_snapshot = dict(self._values)
+        intermediates_snapshot = list(self._intermediates)
+        self._snapshots.append((label, values_snapshot, intermediates_snapshot))
+
+    def get_snapshots(self) -> list[tuple[str, dict, list]]:
+        """Return all snapshots captured during model building."""
+        return self._snapshots
+
+    def get_snapshot_at_step(self, step: int) -> tuple[str, dict, list] | None:
+        """Return the snapshot at a specific step (0-indexed)."""
+        if 0 <= step < len(self._snapshots):
+            return self._snapshots[step]
+        return None
+
+    def get_num_snapshots(self) -> int:
+        """Return the number of snapshots captured."""
+        return len(self._snapshots)
 
     # def __getitem__(self, symbol: sy.Expr) -> sy.Expr:
     #     """Get value stored for `symbol`."""

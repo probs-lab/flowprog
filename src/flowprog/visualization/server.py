@@ -114,12 +114,24 @@ class VisualizationServer:
 
                 edge_id = f"{source}_{target}_{material}"
 
+                # Don't show long expressions on edges, just the material name
+                # Numeric values can be shown if short
+                edge_label = material
+                if display_value and len(display_value) < 15:
+                    try:
+                        # Only add value if it's numeric
+                        float(display_value)
+                        edge_label = f"{material}\n{display_value}"
+                    except (ValueError, TypeError):
+                        # Symbolic expression, don't add to label
+                        pass
+
                 edges.append({
                     'data': {
                         'id': edge_id,
                         'source': source,
                         'target': target,
-                        'label': f"{material}\n{display_value}",
+                        'label': edge_label,
                         'material': material,
                         'value': str(value),
                         'evaluated_value': display_value
@@ -151,6 +163,10 @@ class VisualizationServer:
             # Analyze expressions
             x_analysis = self.analyzer.analyze_expression(x_expr, f"X[{process_id}] (Process Input)")
             y_analysis = self.analyzer.analyze_expression(y_expr, f"Y[{process_id}] (Process Output)")
+
+            # Add evaluation modes
+            x_analysis['evaluation_modes'] = self._get_expression_with_modes(x_expr)
+            y_analysis['evaluation_modes'] = self._get_expression_with_modes(y_expr)
 
             # Get input and output flows
             inputs = []
@@ -237,6 +253,9 @@ class VisualizationServer:
             # Analyze the flow expression
             analysis = self.analyzer.analyze_expression(flow_expr, description)
 
+            # Add evaluation modes
+            analysis['evaluation_modes'] = self._get_expression_with_modes(flow_expr)
+
             return {
                 'source': source,
                 'target': target,
@@ -250,29 +269,55 @@ class VisualizationServer:
         except Exception as e:
             return {'error': str(e)}
 
-    def _evaluate_expression(self, expr) -> str:
-        """Evaluate an expression with current parameter values."""
+    def _evaluate_expression(self, expr, mode='full') -> str:
+        """
+        Evaluate an expression with current parameter values.
+
+        Args:
+            expr: Symbolic expression or numeric value
+            mode: Evaluation mode - 'symbolic' (no substitution),
+                  'recipe' (substitute S/U only), or 'full' (substitute all)
+
+        Returns:
+            String representation of the expression
+        """
         if isinstance(expr, (int, float)):
             return f"{expr:.4g}"
 
         if not isinstance(expr, sy.Expr):
             return str(expr)
 
-        # Try to evaluate with available parameters
-        all_params = {**self.recipe_data, **self.parameter_values}
-
         try:
-            # Substitute known values
-            result = expr.subs(all_params)
+            if mode == 'symbolic':
+                # No substitution, return as-is
+                return str(expr)
 
-            # If it evaluates to a number, format it
-            if result.is_number:
-                return f"{float(result):.4g}"
-            else:
-                # Return symbolic form
+            elif mode == 'recipe':
+                # Only substitute recipe coefficients (S and U)
+                result = expr.subs(self.recipe_data)
+                if result.is_number:
+                    return f"{float(result):.4g}"
                 return str(result)
-        except:
+
+            else:  # mode == 'full'
+                # Substitute all known values (recipe + parameters)
+                all_params = {**self.recipe_data, **self.parameter_values}
+                result = expr.subs(all_params)
+
+                if result.is_number:
+                    return f"{float(result):.4g}"
+                return str(result)
+
+        except Exception:
             return str(expr)
+
+    def _get_expression_with_modes(self, expr) -> Dict[str, str]:
+        """Get an expression evaluated in all three modes."""
+        return {
+            'symbolic': self._evaluate_expression(expr, mode='symbolic'),
+            'recipe_evaluated': self._evaluate_expression(expr, mode='recipe'),
+            'fully_evaluated': self._evaluate_expression(expr, mode='full')
+        }
 
     def run(self, host='127.0.0.1', port=5000, debug=True):
         """Run the Flask development server."""

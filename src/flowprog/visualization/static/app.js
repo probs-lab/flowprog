@@ -125,6 +125,7 @@ function initializeCytoscape() {
     // Add click handlers
     cy.on('tap', 'node.process', function(evt) {
         const node = evt.target;
+        console.log('Process node clicked:', node.data('id'));
         loadProcessDetails(node.data('id'));
     });
 
@@ -133,26 +134,33 @@ function initializeCytoscape() {
         const source = edge.data('source');
         const target = edge.data('target');
         const material = edge.data('material');
+        console.log('Flow edge clicked:', source, '->', target, '(', material, ')');
         loadFlowDetails(source, target, material);
     });
 
     // Double-click to deselect
     cy.on('tap', function(evt) {
         if (evt.target === cy) {
+            console.log('Background clicked, closing panel');
             closePanel();
         }
     });
+
+    console.log('Cytoscape initialized successfully');
 }
 
 // Load graph data from API
 async function loadGraphData() {
     try {
+        console.log('Loading graph data from API...');
         const response = await fetch('/api/graph');
         graphData = await response.json();
+        console.log('Graph data loaded:', graphData.nodes.length, 'nodes,', graphData.edges.length, 'edges');
 
         // Add elements to graph
         cy.add(graphData.nodes);
         cy.add(graphData.edges);
+        console.log('Elements added to Cytoscape');
 
         // Run layout
         cy.layout({
@@ -165,6 +173,7 @@ async function loadGraphData() {
 
         // Fit to screen
         cy.fit(null, 50);
+        console.log('Graph layout complete');
 
     } catch (error) {
         console.error('Error loading graph data:', error);
@@ -175,10 +184,13 @@ async function loadGraphData() {
 // Load process details
 async function loadProcessDetails(processId) {
     try {
+        console.log(`Fetching process details for: ${processId}`);
         const response = await fetch(`/api/process/${encodeURIComponent(processId)}`);
         const data = await response.json();
+        console.log('Process details received:', data);
 
         if (data.error) {
+            console.error('API returned error:', data.error);
             showError(data.error);
             return;
         }
@@ -212,9 +224,15 @@ async function loadFlowDetails(source, target, material) {
 
 // Display process details in panel
 function displayProcessDetails(data) {
+    console.log('Displaying process details...');
     const panel = document.getElementById('details-panel');
     const title = document.getElementById('panel-title');
     const content = document.getElementById('panel-content');
+
+    if (!panel || !title || !content) {
+        console.error('Panel elements not found!', {panel, title, content});
+        return;
+    }
 
     title.textContent = `Process: ${data.process_id}`;
 
@@ -287,10 +305,14 @@ function displayProcessDetails(data) {
     content.innerHTML = html;
 
     // Show panel
+    console.log('Removing collapsed class from panel...');
+    console.log('Panel classes before:', panel.className);
     panel.classList.remove('collapsed');
+    console.log('Panel classes after:', panel.className);
 
     // Render math
     renderMath();
+    console.log('Process details displayed successfully');
 }
 
 // Display flow details in panel
@@ -339,15 +361,50 @@ function displayFlowDetails(data) {
 
 // Render expression analysis
 function renderExpression(analysis) {
-    let html = `
-        <div class="expression-box">
-            <div class="expression-label">Final Expression</div>
-            <div class="expression-content">${escapeHtml(analysis.final_expression)}</div>
-            <div class="latex-content">
-                $$${analysis.final_latex}$$
+    let html = '';
+
+    // Show all three evaluation modes if available
+    if (analysis.evaluation_modes) {
+        html += `
+            <div class="expression-box">
+                <div class="expression-label">Expression (Fully Symbolic)</div>
+                <div class="expression-content">${escapeHtml(analysis.evaluation_modes.symbolic)}</div>
+                <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
+                    No substitution - shows model structure
+                </div>
             </div>
-        </div>
-    `;
+
+            <div class="expression-box">
+                <div class="expression-label">Expression (Recipe Evaluated)</div>
+                <div class="expression-content">${escapeHtml(analysis.evaluation_modes.recipe_evaluated)}</div>
+                <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
+                    Recipe coefficients (S, U) substituted
+                </div>
+            </div>
+
+            <div class="expression-box">
+                <div class="expression-label">Expression (Fully Evaluated)</div>
+                <div class="expression-content">${escapeHtml(analysis.evaluation_modes.fully_evaluated)}</div>
+                <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
+                    All parameters substituted
+                </div>
+                <div class="latex-content">
+                    $$${analysis.final_latex}$$
+                </div>
+            </div>
+        `;
+    } else {
+        // Fallback to old format if evaluation_modes not available
+        html += `
+            <div class="expression-box">
+                <div class="expression-label">Final Expression</div>
+                <div class="expression-content">${escapeHtml(analysis.final_expression)}</div>
+                <div class="latex-content">
+                    $$${analysis.final_latex}$$
+                </div>
+            </div>
+        `;
+    }
 
     // History
     if (analysis.history && analysis.history.length > 0) {

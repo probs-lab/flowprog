@@ -148,53 +148,84 @@ class VisualizationServer:
             })
 
         # Add flow edges (both production and consumption)
-        # Get flows from the model
-        try:
-            flows_df = self.model.to_flows(self.recipe_data)
-        except (KeyError, AttributeError) as e:
-            # Early steps might not have complete model state for flow generation
-            # This is expected behavior - just return no edges
-            print(f"Note: Cannot generate flows at this step: {e}")
-            flows_df = None
+        # Build flows manually from model state to handle incomplete states gracefully
+        for proc_idx, process in enumerate(self.model.processes):
+            x_symbol = self.model.X[proc_idx]
+            y_symbol = self.model.Y[proc_idx]
 
-        if flows_df is not None:
-            for _, row in flows_df.iterrows():
-                source = row['source']
-                target = row['target']
-                material = row['material']
-                value = row['value']
+            # Get X and Y values if they exist
+            x_value = self.model._values.get(x_symbol)
+            y_value = self.model._values.get(y_symbol)
 
-                # Evaluate value if possible
-                display_value = self._evaluate_expression(value)
+            # Production flows: process -> object (requires Y value)
+            if y_value is not None and y_value != 0:
+                for obj_id in process.produces:
+                    obj_idx = self.model._obj_name_to_idx[obj_id]
+                    s_coeff = self.recipe_data.get(self.model.S[obj_idx, proc_idx], sy.Integer(0))
 
-                edge_id = f"{source}_{target}_{material}"
+                    if s_coeff != 0:
+                        flow_expr = y_value * s_coeff
+                        display_value = self._evaluate_expression(flow_expr)
 
-                # Don't show long expressions on edges, just the material name
-                # Numeric values can be shown if short
-                edge_label = material
-                numeric_value = None
-                if display_value and len(display_value) < 15:
-                    try:
-                        # Only add value if it's numeric
-                        numeric_value = float(display_value)
-                        edge_label = f"{material}\n{display_value}"
-                    except (ValueError, TypeError):
-                        # Symbolic expression, don't add to label
-                        pass
+                        edge_id = f"{process.id}_{obj_id}_{obj_id}"
+                        edge_label = obj_id
+                        numeric_value = None
 
-                edges.append({
-                    'data': {
-                        'id': edge_id,
-                        'source': source,
-                        'target': target,
-                        'label': edge_label,
-                        'material': material,
-                        'value': str(value),
-                        'evaluated_value': display_value,
-                        'numeric_value': numeric_value  # For edge width calculation
-                    },
-                    'classes': 'flow'
-                })
+                        if display_value and len(display_value) < 15:
+                            try:
+                                numeric_value = float(display_value)
+                                edge_label = f"{obj_id}\n{display_value}"
+                            except (ValueError, TypeError):
+                                pass
+
+                        edges.append({
+                            'data': {
+                                'id': edge_id,
+                                'source': process.id,
+                                'target': obj_id,
+                                'label': edge_label,
+                                'material': obj_id,
+                                'value': str(flow_expr),
+                                'evaluated_value': display_value,
+                                'numeric_value': numeric_value
+                            },
+                            'classes': 'flow'
+                        })
+
+            # Consumption flows: object -> process (requires X value)
+            if x_value is not None and x_value != 0:
+                for obj_id in process.consumes:
+                    obj_idx = self.model._obj_name_to_idx[obj_id]
+                    u_coeff = self.recipe_data.get(self.model.U[obj_idx, proc_idx], sy.Integer(0))
+
+                    if u_coeff != 0:
+                        flow_expr = x_value * u_coeff
+                        display_value = self._evaluate_expression(flow_expr)
+
+                        edge_id = f"{obj_id}_{process.id}_{obj_id}"
+                        edge_label = obj_id
+                        numeric_value = None
+
+                        if display_value and len(display_value) < 15:
+                            try:
+                                numeric_value = float(display_value)
+                                edge_label = f"{obj_id}\n{display_value}"
+                            except (ValueError, TypeError):
+                                pass
+
+                        edges.append({
+                            'data': {
+                                'id': edge_id,
+                                'source': obj_id,
+                                'target': process.id,
+                                'label': edge_label,
+                                'material': obj_id,
+                                'value': str(flow_expr),
+                                'evaluated_value': display_value,
+                                'numeric_value': numeric_value
+                            },
+                            'classes': 'flow'
+                        })
 
         # Restore original values if we swapped them
         if original_values is not None:

@@ -157,12 +157,20 @@ class VisualizationServer:
             process = self.model.processes[proc_idx]
 
             # Get X and Y values
-            x_expr = self.model._values.get(self.model.X[proc_idx], sy.Integer(0))
-            y_expr = self.model._values.get(self.model.Y[proc_idx], sy.Integer(0))
+            x_symbol = self.model.X[proc_idx]
+            y_symbol = self.model.Y[proc_idx]
+            x_expr = self.model._values.get(x_symbol, sy.Integer(0))
+            y_expr = self.model._values.get(y_symbol, sy.Integer(0))
 
-            # Analyze expressions
-            x_analysis = self.analyzer.analyze_expression(x_expr, f"X[{process_id}] (Process Input)")
-            y_analysis = self.analyzer.analyze_expression(y_expr, f"Y[{process_id}] (Process Output)")
+            # Analyze expressions, passing the symbol for history lookup
+            x_analysis = self.analyzer.analyze_expression(
+                x_expr, f"X[{process_id}] (Process Input)",
+                symbol_for_history=x_symbol
+            )
+            y_analysis = self.analyzer.analyze_expression(
+                y_expr, f"Y[{process_id}] (Process Output)",
+                symbol_for_history=y_symbol
+            )
 
             # Add evaluation modes
             x_analysis['evaluation_modes'] = self._get_expression_with_modes(x_expr)
@@ -174,10 +182,9 @@ class VisualizationServer:
 
             for obj_id in process.consumes:
                 obj_idx = self.model._obj_name_to_idx[obj_id]
-                flow_expr = x_expr * self.model._values.get(
-                    self.model.U[obj_idx, proc_idx],
-                    sy.Integer(0)
-                )
+                # Get U coefficient from recipe_data, not _values
+                u_coeff = self.recipe_data.get(self.model.U[obj_idx, proc_idx], sy.Integer(0))
+                flow_expr = x_expr * u_coeff
                 inputs.append({
                     'object': obj_id,
                     'expression': str(flow_expr),
@@ -187,10 +194,9 @@ class VisualizationServer:
 
             for obj_id in process.produces:
                 obj_idx = self.model._obj_name_to_idx[obj_id]
-                flow_expr = y_expr * self.model._values.get(
-                    self.model.S[obj_idx, proc_idx],
-                    sy.Integer(0)
-                )
+                # Get S coefficient from recipe_data, not _values
+                s_coeff = self.recipe_data.get(self.model.S[obj_idx, proc_idx], sy.Integer(0))
+                flow_expr = y_expr * s_coeff
                 outputs.append({
                     'object': obj_id,
                     'expression': str(flow_expr),
@@ -230,8 +236,9 @@ class VisualizationServer:
 
                 # Flow = Y[j] * S[i, j]
                 y_expr = self.model._values.get(self.model.Y[proc_idx], sy.Integer(0))
-                s_expr = self.model._values.get(self.model.S[obj_idx, proc_idx], sy.Integer(0))
-                flow_expr = y_expr * s_expr
+                # Get S coefficient from recipe_data, not _values
+                s_coeff = self.recipe_data.get(self.model.S[obj_idx, proc_idx], sy.Integer(0))
+                flow_expr = y_expr * s_coeff
 
                 flow_type = "Production"
                 description = f"Production of {material} from process {process_id}"
@@ -244,8 +251,9 @@ class VisualizationServer:
 
                 # Flow = X[j] * U[i, j]
                 x_expr = self.model._values.get(self.model.X[proc_idx], sy.Integer(0))
-                u_expr = self.model._values.get(self.model.U[obj_idx, proc_idx], sy.Integer(0))
-                flow_expr = x_expr * u_expr
+                # Get U coefficient from recipe_data, not _values
+                u_coeff = self.recipe_data.get(self.model.U[obj_idx, proc_idx], sy.Integer(0))
+                flow_expr = x_expr * u_coeff
 
                 flow_type = "Consumption"
                 description = f"Consumption of {material} by process {process_id}"

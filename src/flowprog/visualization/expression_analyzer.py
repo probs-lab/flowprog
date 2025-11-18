@@ -31,9 +31,16 @@ class ExpressionAnalyzer:
         self.model = model
         self._node_counter = 0
 
-    def analyze_expression(self, expr: sy.Expr, name: str = "expression") -> Dict[str, Any]:
+    def analyze_expression(self, expr: sy.Expr, name: str = "expression",
+                          symbol_for_history: sy.Expr = None) -> Dict[str, Any]:
         """
         Analyze an expression and return its decomposition.
+
+        Args:
+            expr: The expression to analyze
+            name: Display name for the expression
+            symbol_for_history: Optional symbol to look up in history (e.g., X[0])
+                               If not provided, uses expr
 
         Returns:
             Dictionary with:
@@ -68,11 +75,12 @@ class ExpressionAnalyzer:
         # Get history if available
         history = []
         if hasattr(self.model, '_history'):
-            # Find matching symbol in history
-            for sym, hist in self.model._history.items():
-                if sym == expr or self._symbols_match(sym, expr):
-                    history = hist
-                    break
+            # Use the provided symbol for history lookup, or fall back to expr
+            lookup_symbol = symbol_for_history if symbol_for_history is not None else expr
+
+            # Look up the symbol in history
+            if lookup_symbol in self.model._history:
+                history = self.model._history[lookup_symbol]
 
         return {
             'final_expression': str(expr),

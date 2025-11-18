@@ -302,21 +302,34 @@ function displayProcessDetails(data) {
         html += `</div>`;
     }
 
-    // X expression (Process Input Magnitude)
-    html += `
-        <div class="section">
-            <div class="section-title">X (Process Input Magnitude)</div>
-            ${renderExpression(data.x_analysis)}
-        </div>
-    `;
+    // X and Y expressions
+    // If has_stock is false, X = Y, so show them once
+    if (!data.has_stock && data.x_analysis.final_expression === data.y_analysis.final_expression) {
+        html += `
+            <div class="section">
+                <div class="section-title">Process Activity (X = Y, no stock)</div>
+                <p style="font-size: 0.85rem; color: #7f8c8d; margin-bottom: 0.75rem;">
+                    This process has no stock, so input magnitude (X) equals output magnitude (Y).
+                </p>
+                ${renderExpression(data.x_analysis)}
+            </div>
+        `;
+    } else {
+        // Show X and Y separately
+        html += `
+            <div class="section">
+                <div class="section-title">X (Process Input Magnitude)</div>
+                ${renderExpression(data.x_analysis)}
+            </div>
+        `;
 
-    // Y expression (Process Output Magnitude)
-    html += `
-        <div class="section">
-            <div class="section-title">Y (Process Output Magnitude)</div>
-            ${renderExpression(data.y_analysis)}
-        </div>
-    `;
+        html += `
+            <div class="section">
+                <div class="section-title">Y (Process Output Magnitude)</div>
+                ${renderExpression(data.y_analysis)}
+            </div>
+        `;
+    }
 
     content.innerHTML = html;
 

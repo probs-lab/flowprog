@@ -426,6 +426,22 @@ function renderExpression(analysis) {
                 <div style="font-size: 0.85rem; color: #7f8c8d; margin-top: 0.5rem;">
                     Recipe coefficients (S, U) substituted
                 </div>
+                ${analysis.evaluation_modes.missing_coefficients && analysis.evaluation_modes.missing_coefficients.length > 0 ? `
+                    <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 0.75rem; margin-top: 0.5rem;">
+                        <div style="color: #856404; font-weight: 600; font-size: 0.9rem; margin-bottom: 0.25rem;">
+                            ⚠️ Warning: Missing Recipe Coefficients
+                        </div>
+                        <div style="color: #856404; font-size: 0.85rem;">
+                            The following coefficients are not defined in recipe_data:
+                            <code style="background: #fff; padding: 0.2rem 0.4rem; border-radius: 3px; margin-left: 0.25rem;">
+                                ${analysis.evaluation_modes.missing_coefficients.join(', ')}
+                            </code>
+                        </div>
+                        <div style="color: #856404; font-size: 0.8rem; margin-top: 0.5rem; font-style: italic;">
+                            This typically indicates a typo in the recipe_data dictionary or missing coefficient definitions.
+                        </div>
+                    </div>
+                ` : ''}
             </div>
 
             <div class="expression-box">

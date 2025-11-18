@@ -320,11 +320,30 @@ class VisualizationServer:
             return str(expr)
 
     def _get_expression_with_modes(self, expr) -> Dict[str, str]:
-        """Get an expression evaluated in all three modes."""
+        """Get an expression evaluated in all three modes, with validation."""
+        recipe_evaluated = self._evaluate_expression(expr, mode='recipe')
+
+        # Check if recipe-evaluated expression still contains S or U symbols
+        # (indicates missing recipe coefficients)
+        missing_coefficients = []
+        try:
+            # Re-substitute to get the sympy expression
+            result = expr.subs(self.recipe_data)
+
+            # Check for S and U symbols in the result
+            for symbol in result.free_symbols:
+                symbol_str = str(symbol)
+                # Check if it's an indexed S or U (like S[3,2] or U[0,3])
+                if symbol_str.startswith('S[') or symbol_str.startswith('U['):
+                    missing_coefficients.append(symbol_str)
+        except:
+            pass
+
         return {
             'symbolic': self._evaluate_expression(expr, mode='symbolic'),
-            'recipe_evaluated': self._evaluate_expression(expr, mode='recipe'),
-            'fully_evaluated': self._evaluate_expression(expr, mode='full')
+            'recipe_evaluated': recipe_evaluated,
+            'fully_evaluated': self._evaluate_expression(expr, mode='full'),
+            'missing_coefficients': missing_coefficients
         }
 
     def run(self, host='127.0.0.1', port=5000, debug=True):

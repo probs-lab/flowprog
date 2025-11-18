@@ -336,6 +336,9 @@ function displayProcessDetails(data) {
     console.log('Panel classes after:', panel.className);
     console.log('Panel classList contains collapsed after?', panel.classList.contains('collapsed'));
 
+    // Force the width to be set (workaround for flex layout issues)
+    panel.style.width = '500px';
+
     // Check computed styles after
     const computedStyleAfter = window.getComputedStyle(panel);
     console.log('Panel computed width after:', computedStyleAfter.width);
@@ -386,6 +389,7 @@ function displayFlowDetails(data) {
 
     // Show panel
     panel.classList.remove('collapsed');
+    panel.style.width = '500px';
 
     // Render math
     renderMath();
@@ -484,6 +488,7 @@ function renderExpression(analysis) {
 function closePanel() {
     const panel = document.getElementById('details-panel');
     panel.classList.add('collapsed');
+    panel.style.width = '0';
     cy.elements().unselect();
 }
 

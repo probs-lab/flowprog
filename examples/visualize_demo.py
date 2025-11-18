@@ -43,14 +43,17 @@ def create_demo_model():
     model = Model(processes, objects)
 
     # Define recipe data (coefficients)
+    # Object indices: Electricity=0, NaturalGas=1, Hydrogen=2, Steel=3, TransportService=4
+    # Process indices: WindTurbine=0, CCGT=1, SteelProductionEAF=2, SteelProductionH2DRI=3,
+    #                  HydrogenProduction=4, ElectricVehicle=5
     recipe_data = {
         # Supply coefficients (S[i, j] - how much of object i is produced per unit activity of process j)
         model.S[0, 0]: 1.0,      # WindTurbine produces 1 unit Electricity
         model.S[0, 1]: 1.0,      # CCGT produces 1 unit Electricity
-        model.S[1, 2]: 1.0,      # SteelProductionEAF produces 1 unit Steel
-        model.S[1, 3]: 1.0,      # SteelProductionH2DRI produces 1 unit Steel
-        model.S[2, 4]: 1.0,      # HydrogenProduction produces 1 unit Hydrogen
-        model.S[4, 5]: 1.0,      # ElectricVehicle produces 1 unit Transport
+        model.S[3, 2]: 1.0,      # SteelProductionEAF produces 1 unit Steel (object 3)
+        model.S[3, 3]: 1.0,      # SteelProductionH2DRI produces 1 unit Steel (object 3)
+        model.S[2, 4]: 1.0,      # HydrogenProduction produces 1 unit Hydrogen (object 2)
+        model.S[4, 5]: 1.0,      # ElectricVehicle produces 1 unit TransportService (object 4)
 
         # Use coefficients (U[i, j] - how much of object i is consumed per unit activity of process j)
         model.U[1, 1]: 2.5,      # CCGT consumes 2.5 units NaturalGas per unit activity

@@ -827,6 +827,178 @@ class Model:
 
         return result
 
+    def save(self, filepath: str, metadata: Optional[dict] = None):
+        """Save the complete model state to a JSON file.
+
+        This saves all information needed to recreate the model without rerunning
+        model.add() calls, including:
+        - Model structure (processes and objects)
+        - All assigned values (_values)
+        - Intermediate symbols and expressions (_intermediates)
+        - History of how values were assigned (_history)
+
+        Symbolic expressions are serialized using SymPy's srepr() which produces
+        canonical string representations that can be exactly reconstructed.
+
+        :param filepath: Path to save the model (will be overwritten if exists)
+        :param metadata: Optional dictionary of metadata to include (e.g., description, author)
+
+        Example:
+            >>> model.save("my_model.json", metadata={"description": "Energy model v1.0"})
+        """
+        import json
+        from datetime import datetime
+
+        # Build the data structure
+        data = {
+            "version": "1.0",
+            "metadata": metadata or {},
+            "saved_at": datetime.now().isoformat(),
+            "processes": [
+                {
+                    "id": p.id,
+                    "produces": p.produces,
+                    "consumes": p.consumes,
+                    "has_stock": p.has_stock,
+                }
+                for p in self.processes
+            ],
+            "objects": [
+                {
+                    "id": o.id,
+                    "metric": str(o.metric),  # Convert URIRef to string
+                    "has_market": o.has_market,
+                }
+                for o in self.objects
+            ],
+            "values": {
+                sy.srepr(k): sy.srepr(v)
+                for k, v in self._values.items()
+                if v != sy.S.Zero  # Don't save default zero values
+            },
+            "intermediates": [
+                {
+                    "symbol": sy.srepr(sym),
+                    "expr": sy.srepr(expr),
+                    "label": label,
+                }
+                for sym, expr, label in self._intermediates
+            ],
+            "history": {
+                sy.srepr(k): v  # keys are expressions, values are already strings
+                for k, v in self._history.items()
+            },
+        }
+
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        _log.info(f"Model saved to {filepath}")
+
+    @classmethod
+    def load(cls, filepath: str) -> "Model":
+        """Load a model from a JSON file created by Model.save().
+
+        This recreates the complete model state including all assigned values,
+        intermediate symbols, and history.
+
+        The model is reconstructed by:
+        1. Creating the model structure (processes and objects)
+        2. Deserializing all symbolic expressions using sympify()
+        3. Restoring values, intermediates, and history
+
+        Note: Due to SymPy's internal caching, IndexedBase objects (X, Y, S, U)
+        created during model initialization will be automatically used by the
+        deserialized expressions.
+
+        :param filepath: Path to the saved model file
+        :return: Reconstructed Model instance
+
+        Example:
+            >>> model = Model.load("my_model.json")
+        """
+        import json
+
+        with open(filepath) as f:
+            data = json.load(f)
+
+        # Check version compatibility
+        if data.get("version") != "1.0":
+            _log.warning(
+                f"Model file version {data.get('version')} may not be compatible "
+                "with this version of flowprog"
+            )
+
+        # Reconstruct processes and objects
+        processes = [
+            Process(
+                id=p["id"],
+                produces=p["produces"],
+                consumes=p["consumes"],
+                has_stock=p["has_stock"],
+            )
+            for p in data["processes"]
+        ]
+
+        objects = [
+            Object(
+                id=o["id"],
+                metric=URIRef(o["metric"]),  # Convert string back to URIRef
+                has_market=o["has_market"],
+            )
+            for o in data["objects"]
+        ]
+
+        # Create the model (this creates X, Y, S, U which get cached by SymPy)
+        model = cls(processes, objects)
+
+        # Prepare namespace for sympify - include the model's IndexedBase objects
+        # so that deserialized expressions reference them
+        namespace = {
+            'X': model.X,
+            'Y': model.Y,
+            'S': model.S,
+            'U': model.U,
+        }
+
+        # Restore values
+        model._values = defaultdict(lambda: sy.S.Zero)
+        for k_str, v_str in data["values"].items():
+            try:
+                k = sy.sympify(k_str, locals=namespace)
+                v = sy.sympify(v_str, locals=namespace)
+                model._values[k] = v
+            except Exception as e:
+                _log.error(f"Failed to deserialize value {k_str}: {e}")
+                raise
+
+        # Restore intermediates
+        model._intermediates = []
+        for item in data["intermediates"]:
+            try:
+                sym = sy.sympify(item["symbol"], locals=namespace)
+                expr = sy.sympify(item["expr"], locals=namespace)
+                model._intermediates.append((sym, expr, item["label"]))
+            except Exception as e:
+                _log.error(f"Failed to deserialize intermediate {item['symbol']}: {e}")
+                raise
+
+        # Restore history
+        model._history = {}
+        for k_str, v in data["history"].items():
+            try:
+                k = sy.sympify(k_str, locals=namespace)
+                model._history[k] = v
+            except Exception as e:
+                _log.error(f"Failed to deserialize history for {k_str}: {e}")
+                raise
+
+        _log.info(f"Model loaded from {filepath}")
+        if "metadata" in data and data["metadata"]:
+            _log.info(f"Metadata: {data['metadata']}")
+
+        return model
+
 
 def convert_indexed_symbols(data):
     """Convert {S[1, 2]: 7} to {S: {(1, 2): 7}}

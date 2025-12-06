@@ -572,7 +572,12 @@ class Model:
         )
 
     def limit(self, values, expr, limit):
-        """Scale down `values` as needed to avoid exceeding `limit` for `expr`."""
+        """Scale down `values` as needed to avoid exceeding `limit` for `expr`.
+
+        Note: This function assumes that process coefficients (S and U matrices)
+        are non-zero. Zero coefficients will cause division by zero errors when
+        expressions are evaluated.
+        """
         # if symbol not in proposed:
         #     raise ValueError("Nothing proposed for %r" % symbol)
         M = len(self.processes)
@@ -605,21 +610,29 @@ class Model:
         # if has_free_symbols:
         #     raise ValueError(f"limit `expr` contains process symbols not included in `values`: {has_free_symbols}")
 
+        # Calculate the difference
+        diff = proposed - current
+
+        # Protect against division by zero when lambdified to numpy.
+        # When lambdify() converts Piecewise to numpy.select(), numpy evaluates
+        # ALL branches before selecting. To prevent division by zero, we use
+        # Max with a tiny epsilon to ensure the denominator is never exactly zero.
+        # We use epsilon = 1e-10 which is small enough to not affect real values
+        # but large enough for numerical stability.
+        epsilon = S(10) ** -10  # Small value to prevent division by zero
+        safe_diff = sy.Max(diff, epsilon)
+
         return {
             k: sy.Piecewise(
                 # Already exceeded the limit, don't add any more
                 (S.Zero, current >= limit),
 
-                # New proposed value is less than the limit, no modification
-                # needed
+                # New proposed value is less than or equal to the limit, no modification needed
                 (v, proposed <= limit),
 
                 # Proposed value needs to be scaled down to just reach limit
-                ((limit - current) / (proposed - current) * v, True),
-
-                # FIXME when `proposed - current` evaluates to zero, this can
-                # cause invalid division by zero warnings. The branch should not
-                # be reached but there is still an error.  Can we avoid it?
+                # Use safe_diff (with epsilon protection) to avoid division by zero when lambdified
+                ((limit - current) / safe_diff * v, True),
 
                 # It can be very slow...
                 evaluate=False,
@@ -680,6 +693,8 @@ class Model:
 
     def eval(self, symbol: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows."""
+        if not isinstance(symbol, sy.Indexed) or symbol.base not in (self.X, self.Y):
+            raise ValueError(f"symbol must be X[i] or Y[i]: {symbol!r}")
         symbol_value = self._values[symbol]
         return self.eval_intermediates(symbol_value)
 

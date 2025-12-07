@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from rdflib import URIRef
 
-from flowprog.imperative_model import Model, Process, Object
+# Import new implementation directly
+from flowprog.model import ModelBuilder, Model, Process, Object
 import sympy as sy
 
 
@@ -38,7 +39,7 @@ class TestBasicSaveLoad:
         """Create a simple model for testing."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_save_creates_file(self, simple_model, tmp_path):
         """Test that save creates a file."""
@@ -68,7 +69,7 @@ class TestSaveLoadWithValues:
         """Create a model with some assigned values."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         # Add some values
         model.add({model.X[0]: 3.5})
@@ -80,13 +81,13 @@ class TestSaveLoadWithValues:
         """Test that symbol assumptions are preserved."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         model.add({model.X[0]: b})  # b is positive
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
 
         expr = loaded.eval(loaded.X[0])
         # Extract the symbol from the expression
@@ -101,14 +102,14 @@ class TestSaveLoadWithHistory:
         """Test that history labels are preserved."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         model.add({model.X[0]: 3.5}, label="initial_value")
         model.add({model.X[0]: 2.5}, label="additional_value")
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
 
         history = loaded.get_history(loaded.X[0])
         assert "initial_value" in history
@@ -122,7 +123,7 @@ class TestSaveLoadWithMetadata:
         """Test that metadata can be saved."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         metadata = {"description": "Test model", "author": "Test Author", "version": 2.0}
 
@@ -140,7 +141,7 @@ class TestSaveLoadWithMetadata:
         """Test that save includes a timestamp."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
@@ -165,7 +166,7 @@ class TestComplexModel:
             Process("M2", produces=["out"], consumes=["mid"]),
         ]
         objects = [MObject("in"), MObject("mid"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         # Add complex expressions
         model.add({model.X[0]: a * b / (c + 1)})
@@ -174,7 +175,7 @@ class TestComplexModel:
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
 
         # Verify the expressions are preserved
         assert loaded.eval(loaded.X[0]) == a * b / (c + 1)
@@ -189,11 +190,11 @@ class TestEdgeCases:
         """Test saving a model with no values assigned."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
 
         assert len(loaded.processes) == 1
         assert len(loaded.objects) == 2
@@ -201,20 +202,20 @@ class TestEdgeCases:
     def test_load_nonexistent_file(self):
         """Test loading from a file that doesn't exist."""
         with pytest.raises(FileNotFoundError):
-            Model.load("nonexistent_file.json")
+            ModelBuilder.load("nonexistent_file.json")
 
     def test_cross_references_preserved(self, tmp_path):
         """Test that cross-references between IndexedBase are preserved."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        model = Model(processes, objects)
+        model = ModelBuilder(processes, objects)
 
         # Create an expression that references Y
         model.add({model.X[0]: model.Y[0] * 2})
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
 
         # Check that the expression was preserved correctly
         expr = loaded._values[loaded.X[0]]
@@ -222,3 +223,144 @@ class TestEdgeCases:
 
         # Verify the expression still contains Y[0] references
         assert loaded.Y[0] in expr.free_symbols
+
+
+class TestEvaluableModelSaveLoad:
+    """Test save/load for evaluable Model (with recipe data)."""
+
+    @pytest.fixture
+    def model_with_recipe(self):
+        """Create an evaluable model with recipe data."""
+        processes = [
+            Process("SteamCracking", produces=["Ethylene"], consumes=["Naphtha"]),
+            Process("Polymerization", produces=["Polyethylene"], consumes=["Ethylene"]),
+        ]
+        objects = [
+            MObject("Naphtha", has_market=False),
+            MObject("Ethylene", has_market=True),
+            MObject("Polyethylene", has_market=False),
+        ]
+
+        builder = ModelBuilder(processes, objects)
+        demand = sy.Symbol("demand", nonnegative=True)
+        builder.add(
+            builder.pull_production("Polyethylene", demand, until_objects=["Naphtha"]),
+            label="Pull polyethylene production",
+        )
+
+        recipe = {
+            "SteamCracking": {
+                "consumes": {"Naphtha": 1.0},
+                "produces": {"Ethylene": 0.3},
+            },
+            "Polymerization": {
+                "consumes": {"Ethylene": 1.0},
+                "produces": {"Polyethylene": 0.95},
+            },
+        }
+
+        return builder.build(recipe), demand
+
+    def test_save_creates_file(self, model_with_recipe, tmp_path):
+        """Test that Model.save creates a file."""
+        model, _ = model_with_recipe
+        filepath = tmp_path / "test_model.json"
+        model.save(str(filepath))
+        assert filepath.exists()
+
+    def test_save_includes_recipe(self, model_with_recipe, tmp_path):
+        """Test that saved file includes recipe data."""
+        model, _ = model_with_recipe
+        filepath = tmp_path / "test_model.json"
+        model.save(str(filepath))
+
+        with open(filepath) as f:
+            data = json.load(f)
+
+        assert "recipe" in data
+        assert "type" in data
+        assert data["type"] == "evaluable_model"
+        assert "SteamCracking" in data["recipe"]
+        assert "Polymerization" in data["recipe"]
+
+    def test_roundtrip_preserves_recipe(self, model_with_recipe, tmp_path):
+        """Test that recipe is correctly restored after save/load."""
+        model, demand = model_with_recipe
+        filepath = tmp_path / "test_model.json"
+
+        model.save(str(filepath))
+        loaded = Model.load(str(filepath))
+
+        # Verify recipe was restored
+        recipe_sc = loaded.get_recipe("SteamCracking")
+        recipe_poly = loaded.get_recipe("Polymerization")
+
+        assert recipe_sc["produces"]["Ethylene"] == 0.3
+        assert recipe_sc["consumes"]["Naphtha"] == 1.0
+        assert recipe_poly["produces"]["Polyethylene"] == 0.95
+        assert recipe_poly["consumes"]["Ethylene"] == 1.0
+
+    def test_roundtrip_preserves_flows(self, model_with_recipe, tmp_path):
+        """Test that flows are identical after save/load."""
+        model, demand = model_with_recipe
+        filepath = tmp_path / "test_model.json"
+
+        # Get original flows
+        flows_original = model.to_flows({demand: 1000})
+
+        # Save and load
+        model.save(str(filepath))
+        loaded = Model.load(str(filepath))
+
+        # Get loaded flows
+        flows_loaded = loaded.to_flows({demand: 1000})
+
+        # Compare
+        assert len(flows_original) == len(flows_loaded)
+        for i in range(len(flows_original)):
+            assert flows_original.iloc[i]["source"] == flows_loaded.iloc[i]["source"]
+            assert flows_original.iloc[i]["target"] == flows_loaded.iloc[i]["target"]
+            assert flows_original.iloc[i]["material"] == flows_loaded.iloc[i]["material"]
+
+            v1 = flows_original.iloc[i]["value"]
+            v2 = flows_loaded.iloc[i]["value"]
+            if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                assert abs(v1 - v2) < 1e-10
+
+    def test_roundtrip_preserves_lambdify(self, model_with_recipe, tmp_path):
+        """Test that lambdify works identically after save/load."""
+        model, demand = model_with_recipe
+        filepath = tmp_path / "test_model.json"
+
+        # Get original lambdified function
+        func_original = model.lambdify()
+
+        # Save and load
+        model.save(str(filepath))
+        loaded = Model.load(str(filepath))
+
+        # Get loaded lambdified function
+        func_loaded = loaded.lambdify()
+
+        # Test with different demand values
+        for d in [500, 1000, 2000]:
+            result_orig = func_original({demand: d})
+            result_load = func_loaded({demand: d})
+
+            assert set(result_orig.keys()) == set(result_load.keys())
+            for key in result_orig.keys():
+                assert abs(result_orig[key] - result_load[key]) < 1e-10
+
+    def test_save_with_metadata(self, model_with_recipe, tmp_path):
+        """Test that metadata can be saved with evaluable model."""
+        model, _ = model_with_recipe
+        filepath = tmp_path / "test_model.json"
+
+        metadata = {"description": "Test evaluable model", "author": "Test"}
+        model.save(str(filepath), metadata=metadata)
+
+        with open(filepath) as f:
+            data = json.load(f)
+
+        assert data["metadata"]["description"] == "Test evaluable model"
+        assert data["metadata"]["author"] == "Test"

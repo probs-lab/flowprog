@@ -4,7 +4,7 @@ from hypothesis import strategies as st, given, assume, example, settings
 from sympy.abc import a, b, c
 from flowprog.imperative_model import *
 
-from .model_strategies import MASS, MObject, has_cycle_through_market, model_strategy
+from .model_strategies import MASS, MObject, has_cycle_through_market, model_builder_strategy
 
 
 @given(st.floats(min_value=0, max_value=1e20, allow_infinity=False),
@@ -319,12 +319,12 @@ class TestBranchingModel:
 # PROPERTY-BASED TESTS WITH RANDOM MODELS
 # ============================================================================
 
-@given(model_strategy())
+@given(model_builder_strategy())
 # @settings(deadline=None)  # Disable deadline for this test
-def test_generated_model_basic_operations(m):
+def test_generated_model_basic_operations(b):
     """Test that generated models can perform basic operations without errors."""
     # Find objects that are produced
-    produced_objects = {obj_id for p in m.processes for obj_id in p.produces}
+    produced_objects = {obj_id for p in b.processes for obj_id in p.produces}
     assume(len(produced_objects) > 0)
 
     # Pick an object to test with
@@ -335,8 +335,8 @@ def test_generated_model_basic_operations(m):
 
     # Define allocation coefficients for all objects that need them
     allocs = {}
-    for obj in m.objects:
-        producers = m.producers_of(obj.id)
+    for obj in b.objects:
+        producers = b.producers_of(obj.id)
         if len(producers) > 1:
             # Multiple producers - need allocation
             allocs[obj.id] = {
@@ -344,19 +344,19 @@ def test_generated_model_basic_operations(m):
                 for proc_id in producers
             }
 
-    try:
-        # Try basic pull operation
-        result = m.pull_production(test_obj, demand, allocate_backwards=allocs)
-        m.add(result)
+    # try:
+    # Try basic pull operation
+    result = b.pull_production(test_obj, demand, allocate_backwards=allocs)
+    b.add(result)
 
-        # Try to evaluate object balance for produced objects
-        for obj_id in list(produced_objects)[:3]:  # Just check first 3
-            balance = m.object_balance(obj_id)
-            # Should not raise an error
-            assert balance is not None
-    except Exception as e:
-        # If we get a divide by zero or other error, that's what we're looking for
-        if "division by zero" in str(e).lower() or "zerodivision" in str(e).lower():
-            raise
-        # Other errors might be expected for some random models
-        assume(False)
+    # Try to evaluate object balance for produced objects
+    for obj_id in list(produced_objects)[:3]:  # Just check first 3
+        balance = b.object_balance(obj_id)
+        # Should not raise an error
+        assert balance is not None
+    # except Exception as e:
+    #     # If we get a divide by zero or other error, that's what we're looking for
+    #     if "division by zero" in str(e).lower() or "zerodivision" in str(e).lower():
+    #         raise
+    #     # Other errors might be expected for some random models
+    #     assume(False)

@@ -1,7 +1,9 @@
 import pytest
 from rdflib import URIRef
 
-from flowprog.imperative_model import *
+# Import new implementation directly
+from flowprog.model import ModelBuilder, Process, Object
+import sympy as sy
 
 
 # Shorthand
@@ -21,7 +23,7 @@ class TestSimpleChain:
     def m(self):
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_push_first_object_consumption(self, m):
         result = m.push_consumption("in", a)
@@ -90,7 +92,7 @@ class TestTwoProducersAllocateBackwards:
             Process("M2", produces=["out"], consumes=["in2"]),
         ]
         objects = [MObject("in1"), MObject("in2"), MObject("out")]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     @pytest.fixture
     def m2(self):
@@ -107,7 +109,7 @@ class TestTwoProducersAllocateBackwards:
             MObject("in2", has_market=True),
             MObject("out"),
         ]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_pull_last_object_production(self, m):
         d = sy.Symbol("d")
@@ -175,7 +177,7 @@ class TestBalanceObject:
             Process("Use", consumes=["mid"], produces=["out"]),
         ]
         objects = [MObject("in1"), MObject("in2"), MObject("mid"), MObject("out")]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_balance_mid_object(self, m):
         m.add(
@@ -206,7 +208,7 @@ class TestLoops:
             Process("A", consumes=["B"], produces=["B"]),
         ]
         objects = [MObject("B", True)]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_loop_works(self, m):
         m.pull_production("B", 3)
@@ -220,7 +222,7 @@ class TestLoops2:
             Process("B", consumes=["2"], produces=["1"]),
         ]
         objects = [MObject("1", True), MObject("2", True)]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_loop_works(self, m):
         m.pull_production("1", 3)
@@ -241,7 +243,7 @@ class TestExpr:
             MObject("by"),
             MObject("out"),
         ]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     def test_expr_process_output(self, m):
         expr = m.expr("ProcessOutput", process_id="M1", object_id="mid")
@@ -261,6 +263,165 @@ class TestExpr:
     def test_expr_consumption(self, m):
         expr = m.expr("Consumption", object_id="mid")
         assert expr == (m.expr("ProcessInput", process_id="Use", object_id="mid"))
+
+
+class TestRecipeValidation:
+    """Test that invalid recipes are rejected with appropriate errors."""
+
+    @pytest.fixture
+    def simple_model(self):
+        """Create a simple model for testing recipe validation."""
+        processes = [Process("P1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        builder = ModelBuilder(processes, objects)
+        demand = sy.Symbol("demand")
+        builder.add(builder.pull_production("out", demand, until_objects=["in"]))
+        return builder
+
+    def test_invalid_consumed_object(self, simple_model):
+        """Test that recipe with invalid consumed object raises ValueError."""
+        invalid_recipe = {
+            "P1": {
+                "consumes": {"WRONG_OBJECT": 1.0},
+                "produces": {"out": 0.5},
+            }
+        }
+
+        with pytest.raises(ValueError, match="WRONG_OBJECT"):
+            simple_model.build(invalid_recipe)
+
+    def test_invalid_produced_object(self, simple_model):
+        """Test that recipe with invalid produced object raises ValueError."""
+        invalid_recipe = {
+            "P1": {
+                "consumes": {"in": 1.0},
+                "produces": {"WRONG_OBJECT": 0.5},
+            }
+        }
+
+        with pytest.raises(ValueError, match="WRONG_OBJECT"):
+            simple_model.build(invalid_recipe)
+
+    def test_invalid_process_id(self, simple_model):
+        """Test that recipe with invalid process ID raises ValueError."""
+        invalid_recipe = {
+            "WRONG_PROCESS": {
+                "consumes": {"in": 1.0},
+                "produces": {"out": 0.5},
+            }
+        }
+
+        with pytest.raises(ValueError, match="WRONG_PROCESS"):
+            simple_model.build(invalid_recipe)
+
+    def test_valid_recipe_accepted(self, simple_model):
+        """Test that valid recipe is accepted without errors."""
+        valid_recipe = {
+            "P1": {
+                "consumes": {"in": 1.0},
+                "produces": {"out": 0.5},
+            }
+        }
+
+        # Should not raise
+        model = simple_model.build(valid_recipe)
+        assert model is not None
+
+
+class TestSymbolicRecipeValues:
+    """Test that recipe values can be symbolic and work with lambdify."""
+
+    @pytest.fixture
+    def model_with_symbolic_recipe(self):
+        """Create a model with symbolic recipe values."""
+        processes = [
+            Process("Production", produces=["Product"], consumes=["Input"]),
+        ]
+        objects = [
+            MObject("Input", has_market=False),
+            MObject("Product", has_market=False),
+        ]
+
+        builder = ModelBuilder(processes, objects)
+        demand = sy.Symbol("demand", nonnegative=True)
+        builder.add(
+            builder.pull_production("Product", demand, until_objects=["Input"]),
+            label="Pull production",
+        )
+
+        # Recipe with symbolic value
+        product_yield = sy.Symbol("product_yield", positive=True)
+        recipe = {
+            "Production": {
+                "consumes": {"Input": 1.0},
+                "produces": {"Product": product_yield},  # Symbolic!
+            }
+        }
+
+        return builder.build(recipe), demand, product_yield
+
+    def test_symbolic_recipe_in_lambdify_parameters(self, model_with_symbolic_recipe):
+        """Test that symbolic recipe value appears as a free parameter in lambdify."""
+        model, demand, product_yield = model_with_symbolic_recipe
+
+        # Get lambdified function
+        func = model.lambdify()
+
+        # The function should accept both demand and product_yield as parameters
+        # Test with different yield values
+        result1 = func({demand: 1000, product_yield: 0.7})
+        result2 = func({demand: 1000, product_yield: 0.9})
+
+        # Results should be different when yield changes
+        assert result1 != result2
+
+    def test_symbolic_recipe_substitution(self, model_with_symbolic_recipe):
+        """Test that symbolic recipe value is correctly substituted in lambdify."""
+        model, demand, product_yield = model_with_symbolic_recipe
+
+        # Get lambdified function
+        func = model.lambdify()
+
+        # Test specific values
+        yield_val = 0.8
+        demand_val = 1000
+
+        result = func({demand: demand_val, product_yield: yield_val})
+
+        # Result should be a dict with 2 flow values
+        # One for Product output (should equal demand) and one for Input (should equal demand/yield)
+        values = sorted(result.values())
+
+        # Product output = 1000, Input = 1000 / 0.8 = 1250
+        expected_values = sorted([demand_val, demand_val / yield_val])
+
+        assert len(values) == 2
+        for actual, expected in zip(values, expected_values):
+            assert abs(actual - expected) < 1e-10
+
+    def test_symbolic_recipe_multiple_evaluations(self, model_with_symbolic_recipe):
+        """Test that symbolic recipe works correctly with multiple evaluations."""
+        model, demand, product_yield = model_with_symbolic_recipe
+
+        func = model.lambdify()
+
+        # Test multiple combinations
+        test_cases = [
+            (500, 0.7),
+            (1000, 0.8),
+            (2000, 0.9),
+        ]
+
+        for demand_val, yield_val in test_cases:
+            result = func({demand: demand_val, product_yield: yield_val})
+
+            # Verify the calculation is correct
+            values = sorted(result.values())
+            expected_values = sorted([demand_val, demand_val / yield_val])
+
+            assert len(values) == 2
+            for actual, expected in zip(values, expected_values):
+                assert abs(actual - expected) < 1e-10
 
 
 # def test_solution_longer_chain():

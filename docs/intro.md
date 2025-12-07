@@ -9,9 +9,9 @@ This project helps with building Material Flow (MFA) models by defining equation
 
 Install `flowprog` -- it is not yet released on PyPI so this needs to be done locally or via git.
 
-See the [examples]() to get an idea of how flowprog can be used.
+See the [examples](examples/energy/index) to get an idea of how flowprog can be used.
 
-See the [API documentation]() for details of the functions available.
+See the [API documentation](api/) for details of the functions available.
 
 ## Why use flowprog?
 
@@ -22,4 +22,4 @@ Compared to alternative ways of forumulating MFA models such as using an Input-O
 
 If this flexibility is not required, you may not want to use flowprog.
 
-flowprog can also make use of information about MFA system structure (processes, material types, and their connections) defined using the [PRObs system structure ontology](). By reusing this structural information, it can be possible to avoid duplication and re-use work already put into documenting a system definition.
+flowprog can also make use of information about MFA system structure (processes, material types, and their connections) defined using the [PRObs system structure ontology](https://probs-lab.github.io/probs-ontology). By reusing this structural information, it can be possible to avoid duplication and re-use work already put into documenting a system definition.

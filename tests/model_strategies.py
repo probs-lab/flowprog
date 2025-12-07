@@ -3,7 +3,7 @@
 from hypothesis import strategies as st
 from hypothesis import assume
 from rdflib import URIRef
-from flowprog.imperative_model import Model, Process, Object
+from flowprog import ModelBuilder, Model, Process, Object
 
 
 # Shorthand for creating objects
@@ -77,7 +77,7 @@ def has_cycle_through_market(processes, objects):
 
 
 @st.composite
-def model_strategy(
+def model_builder_strategy(
     draw,
     min_processes=1,
     max_processes=10,
@@ -85,7 +85,7 @@ def model_strategy(
     max_objects=10,
     randomize_has_stock=False,
 ):
-    """Generate a random model structure (processes and objects).
+    """Generate a random model builder structure (processes and objects).
 
     Args:
         draw: Hypothesis draw function
@@ -96,7 +96,7 @@ def model_strategy(
         randomize_has_stock: If True, randomize Process.has_stock (default False)
 
     Returns:
-        Model instance with generated structure
+        ModelBuilder instance with generated structure
     """
     num_processes = draw(st.integers(min_value=min_processes, max_value=max_processes))
     num_objects = draw(st.integers(min_value=min_objects, max_value=max_objects))
@@ -147,4 +147,4 @@ def model_strategy(
     # Reject models with cycles through market objects
     assume(not has_cycle_through_market(processes, objects))
 
-    return Model(processes, objects)
+    return ModelBuilder(processes, objects)

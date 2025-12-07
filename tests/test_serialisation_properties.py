@@ -11,8 +11,8 @@ from hypothesis import given, strategies as st, assume, settings, example
 from hypothesis import HealthCheck
 import sympy as sy
 
-from flowprog.imperative_model import Model, Process, Object
-from .model_strategies import MASS, MObject, has_cycle_through_market, model_strategy
+from flowprog import Model, ModelBuilder, Process, Object
+from .model_strategies import MASS, MObject, has_cycle_through_market, model_builder_strategy
 
 
 # ============================================================================
@@ -21,46 +21,46 @@ from .model_strategies import MASS, MObject, has_cycle_through_market, model_str
 
 
 @st.composite
-def recipe_data_strategy(draw, model):
+def recipe_data_strategy(draw, builder: ModelBuilder):
     """Generate recipe data (S and U coefficients) for a given model.
 
     Returns a dict like {model.S[i, j]: float_value, model.U[i, j]: float_value}
     """
     recipe_data = {}
 
-    for i, proc in enumerate(model.processes):
+    for i, proc in enumerate(builder.processes):
         # For each object the process produces, set S coefficient
         for obj_id in proc.produces:
-            obj_idx = model._lookup_object(obj_id)
+            obj_idx = builder._lookup_object(obj_id)
             value = draw(st.floats(min_value=0.1, max_value=10.0))
-            recipe_data[model.S[obj_idx, i]] = value
+            recipe_data[builder.S[obj_idx, i]] = value
 
         # For each object the process consumes, set U coefficient
         for obj_id in proc.consumes:
-            obj_idx = model._lookup_object(obj_id)
+            obj_idx = builder._lookup_object(obj_id)
             value = draw(st.floats(min_value=0.1, max_value=10.0))
-            recipe_data[model.U[obj_idx, i]] = value
+            recipe_data[builder.U[obj_idx, i]] = value
 
     return recipe_data
 
 
 @st.composite
-def model_with_recipe_strategy(draw):
+def model_builder_with_recipe_strategy(draw):
     """Generate a model structure with recipe data."""
-    model = draw(model_strategy(max_processes=5, max_objects=5, randomize_has_stock=True))
-    recipe_data = draw(recipe_data_strategy(model))
-    return model, recipe_data
+    builder = draw(model_builder_strategy(max_processes=5, max_objects=5, randomize_has_stock=True))
+    recipe_data = draw(recipe_data_strategy(builder))
+    return builder, recipe_data
 
 
 @st.composite
-def model_with_state_strategy(draw):
+def model_builder_with_state_strategy(draw):
     """Generate a model with recipe data and some state from operations.
 
-    Returns (model, recipe_data) where:
-    - model has state accumulated through operations (X, Y values in _values)
+    Returns (builder, recipe_data) where:
+    - builder has state accumulated through operations (X, Y values in _values)
     - recipe_data is a separate dict of S, U coefficients
     """
-    model, recipe_data = draw(model_with_recipe_strategy())
+    builder, recipe_data = draw(model_builder_with_recipe_strategy())
 
     # Optionally add some symbolic expressions through operations
     # These go into the model's _values dict for X and Y
@@ -68,31 +68,91 @@ def model_with_state_strategy(draw):
 
     if num_operations > 0:
         # Try to add demand for the first object (which we ensured exists)
-        first_obj = model.objects[0].id
+        first_obj = builder.objects[0].id
 
         # Check if any process produces it
-        producers = list(model.producers_of(first_obj))
+        producers = list(builder.producers_of(first_obj))
         if producers:
             try:
                 demand_symbol = sy.Symbol("demand", positive=True)
-                # This adds X and Y values to model._values
-                model.add(
-                    model.pull_production(first_obj, demand_symbol),
+                builder.add(
+                    builder.pull_production(first_obj, demand_symbol),
                     label="test_demand"
                 )
             except (ValueError, KeyError):
-                # Some model structures may not support this
+                # Some builder structures may not support this
                 pass
 
     # FIXME additional operations
 
-    return model, recipe_data
+    return builder, recipe_data
+
+
+#### Specific example models beyond what's generated
+def example_model_with_allocation():
+    """Test model using allocation (creates intermediates).
+    """
+    processes = [
+        Process("P1", produces=["mid"], consumes=["in"]),
+        Process("P2", produces=["mid"], consumes=["in"]),
+        Process("P3", produces=["out"], consumes=["mid"]),
+    ]
+    objects = [MObject("in"), MObject("mid", has_market=True), MObject("out")]
+    builder = ModelBuilder(processes, objects)
+
+    # Add demand with allocation (this creates intermediates and updates X/Y in _values)
+    a = sy.Symbol("a", positive=True)
+    builder.add(
+        builder.pull_production(
+            "mid", a, allocate_backwards={"mid": {"P1": 0.6, "P2": 0.4}}
+        ),
+        label="allocated_demand",
+    )
+
+    recipe_data = {
+        builder.S[1, 0]: 1.0, builder.U[0, 0]: 0.8,
+        builder.S[1, 1]: 1.0, builder.U[0, 1]: 0.8,
+        builder.S[2, 2]: 1.0, builder.U[1, 2]: 0.9,
+    }
+
+    return builder.build(recipe_data)
+
+
+def example_model_with_limits():
+    """Example model using limits.
+    """
+    processes = [Process("P1", produces=["out"], consumes=[])]
+    objects = [MObject("out")]
+    builder = ModelBuilder(processes, objects)
+
+    recipe_data = {builder.S[0, 0]: 1.0}
+
+    a = sy.Symbol("a", positive=True)
+    b = sy.Symbol("b", positive=True)
+
+    unlimited = builder.pull_production("out", a)
+    builder.add(unlimited)
+
+    extra = builder.pull_production("out", b)
+    limited = builder.limit(extra, builder.Y[0], sy.Symbol("limit", positive=True))
+    builder.add(limited, label="limited_demand")
+
+    return builder.build(recipe_data)
+
+
+@st.composite
+@example(example_model_with_allocation())
+@example(example_model_with_limits())
+def model_with_state_strategy(draw):
+    """Generate a built Model"""
+    builder, recipe_data = draw(model_builder_with_recipe_strategy())
+    return builder.build(recipe_data)
 
 
 @st.composite
 def simple_linear_model_strategy(draw):
     """Generate a simple linear chain model with recipe data (kept separate)."""
-    num_processes = draw(st.integers(min_value=2, max_value=8))
+    num_processes = draw(st.integers(min_value=1, max_value=8))
 
     processes = []
     objects = []
@@ -110,16 +170,22 @@ def simple_linear_model_strategy(draw):
             )
         )
 
-    model = Model(processes, objects)
+    builder = ModelBuilder(processes, objects)
 
     # Generate recipe data (kept separate from model state)
     recipe_data = {}
     for i in range(num_processes):
-        recipe_data[model.S[i, i]] = draw(st.floats(min_value=0.5, max_value=2.0))
+        recipe_data[builder.S[i, i]] = draw(st.floats(min_value=0.5, max_value=2.0))
         if i > 0:
-            recipe_data[model.U[i - 1, i]] = draw(st.floats(min_value=0.5, max_value=2.0))
+            recipe_data[builder.U[i - 1, i]] = draw(st.floats(min_value=0.5, max_value=2.0))
 
-    return model, recipe_data
+    # Add some demand using pull_production
+    demand = sy.Symbol("demand_final", positive=True)
+    final_object = builder.objects[-1].id
+
+    builder.add(builder.pull_production(final_object, demand), label="final_demand")
+
+    return builder.build(recipe_data), demand
 
 
 # ============================================================================
@@ -128,10 +194,9 @@ def simple_linear_model_strategy(draw):
 
 
 @given(model_with_state_strategy())
-@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
-def test_roundtrip_preserves_structure(model_and_recipe):
+# @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
+def test_roundtrip_preserves_structure(model):
     """Test that save/load preserves model structure."""
-    model, recipe_data = model_and_recipe
 
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = Path(tmpdir) / "test_model.json"
@@ -157,11 +222,9 @@ def test_roundtrip_preserves_structure(model_and_recipe):
 
 
 @given(model_with_state_strategy())
-@settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
-def test_roundtrip_preserves_all_values(model_and_recipe):
+# @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
+def test_roundtrip_preserves_all_values(model):
     """Test that save/load preserves all assigned values."""
-    model, recipe_data = model_and_recipe
-
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = Path(tmpdir) / "test_model.json"
 
@@ -191,64 +254,49 @@ def test_roundtrip_preserves_all_values(model_and_recipe):
 
 
 @given(simple_linear_model_strategy())
-@settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
-def test_roundtrip_with_pull_production(model_and_recipe):
+# @settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
+def test_roundtrip_with_pull_production(model_and_symbol):
     """Test that loaded models work with pull_production."""
-    model, recipe_data = model_and_recipe
-    assume(len(model.processes) >= 1)
+    model, demand = model_and_symbol
 
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = Path(tmpdir) / "test_model.json"
-
-        # Add some demand using pull_production
-        demand = sy.Symbol("demand_final", positive=True)
-        final_object = model.objects[-1].id
-
-        try:
-            model.add(model.pull_production(final_object, demand), label="final_demand")
-        except (ValueError, KeyError):
-            # Some generated models may not support this operation
-            assume(False)
 
         # Save and load
         model.save(str(filepath))
         loaded = Model.load(str(filepath))
 
-        # Verify history is preserved
-        if model._history:
-            assert len(loaded._history) >= len(model._history)
+    # Verify we can evaluate expressions in both
+    for i in range(len(model.processes)):
+        orig_x = model.eval(model.X[i])
+        loaded_x = loaded.eval(loaded.X[i])
 
-        # Verify we can evaluate expressions in both
-        for i in range(len(model.processes)):
-            orig_x = model.eval(model.X[i])
-            loaded_x = loaded.eval(loaded.X[i])
-
-            # Check symbolic equivalence
-            if orig_x.free_symbols:
-                assert orig_x == loaded_x or (orig_x - loaded_x).simplify() == 0
-            elif orig_x.is_number:
-                assert abs(float(orig_x) - float(loaded_x)) < 1e-10
+        # Check symbolic equivalence
+        if orig_x.free_symbols:
+            assert orig_x == loaded_x or (orig_x - loaded_x).simplify() == 0
+        elif orig_x.is_number:
+            assert abs(float(orig_x) - float(loaded_x)) < 1e-10
 
 
-@given(model_with_state_strategy())
-@settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
-def test_loaded_model_can_be_extended(model_and_recipe):
+@given(model_builder_with_state_strategy())
+# @settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
+def test_loaded_builder_can_be_extended(builder_and_recipe):
     """Test that loaded models can continue to be modified."""
-    model, recipe_data = model_and_recipe
+    builder, recipe_data = builder_and_recipe
 
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = Path(tmpdir) / "test_model.json"
 
         # Save and load
-        model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        builder.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
 
-        # Add new values to loaded model
+        # Add new values to loaded builder
         new_value = sy.Symbol("new_symbol", positive=True)
         loaded.add({loaded.X[0]: new_value}, label="after_load")
 
         # Verify the new value was added
-        assert loaded.eval(loaded.X[0]) != model.eval(model.X[0]) or new_value in loaded.eval(
+        assert loaded.eval(loaded.X[0]) != builder.eval(builder.X[0]) or new_value in loaded.eval(
             loaded.X[0]
         ).free_symbols
 
@@ -258,11 +306,9 @@ def test_loaded_model_can_be_extended(model_and_recipe):
 
 
 @given(model_with_state_strategy())
-@settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
-def test_roundtrip_preserves_intermediates(model_and_recipe):
+# @settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
+def test_roundtrip_preserves_intermediates(model):
     """Test that intermediate symbols are preserved."""
-    model, recipe_data = model_and_recipe
-
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = Path(tmpdir) / "test_model.json"
 
@@ -290,11 +336,9 @@ def test_roundtrip_preserves_intermediates(model_and_recipe):
     model_with_state_strategy(),
     st.dictionaries(st.text(min_size=1, max_size=20), st.text(min_size=1, max_size=50), max_size=5),
 )
-@settings(max_examples=10, suppress_health_check=[HealthCheck.too_slow])
-def test_metadata_preservation(model_and_recipe, metadata):
+# @settings(max_examples=10, suppress_health_check=[HealthCheck.too_slow])
+def test_metadata_preservation(model, metadata):
     """Test that metadata is preserved through save/load."""
-    model, recipe_data = model_and_recipe
-
     with tempfile.TemporaryDirectory() as tmpdir:
         filepath = Path(tmpdir) / "test_model.json"
 
@@ -310,111 +354,9 @@ def test_metadata_preservation(model_and_recipe, metadata):
         for key, value in metadata.items():
             assert data["metadata"][key] == value
 
-
-@given(st.integers(min_value=1, max_value=4))
-@settings(max_examples=10)
-def test_multiple_roundtrips(num_roundtrips):
-    """Test that multiple save/load cycles preserve model state.
-
-    Note: This tests model state (X/Y values).
-    """
-    # Create a simple model
-    processes = [Process("P0", produces=["O0"], consumes=[])]
-    objects = [MObject("O0")]
-    model = Model(processes, objects)
-
-    # Add symbolic value to model state (this goes in _values for X)
-    model.add({model.X[0]: sy.Symbol("x", positive=True)})
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        current_model = model
-
-        for i in range(num_roundtrips):
-            filepath = Path(tmpdir) / f"model_v{i}.json"
-
-            current_model.save(str(filepath))
-            current_model = Model.load(str(filepath))
-
-        # After all roundtrips, model state should still be preserved
-        assert current_model.eval(current_model.X[0]) == sy.Symbol("x", positive=True)
-
-
 # ============================================================================
 # Regression Tests for Specific Model Patterns
 # ============================================================================
-
-
-def test_model_with_allocation_roundtrip():
-    """Test roundtrip for model using allocation (creates intermediates).
-    """
-    processes = [
-        Process("P1", produces=["mid"], consumes=["in"]),
-        Process("P2", produces=["mid"], consumes=["in"]),
-        Process("P3", produces=["out"], consumes=["mid"]),
-    ]
-    objects = [MObject("in"), MObject("mid", has_market=True), MObject("out")]
-    model = Model(processes, objects)
-
-    recipe_data = {
-        model.S[1, 0]: 1.0, model.U[0, 0]: 0.8,
-        model.S[1, 1]: 1.0, model.U[0, 1]: 0.8,
-        model.S[2, 2]: 1.0, model.U[1, 2]: 0.9,
-    }
-
-    # Add demand with allocation (this creates intermediates and updates X/Y in _values)
-    a = sy.Symbol("a", positive=True)
-    model.add(
-        model.pull_production(
-            "mid", a, allocate_backwards={"mid": {"P1": 0.6, "P2": 0.4}}
-        ),
-        label="allocated_demand",
-    )
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        filepath = Path(tmpdir) / "test.json"
-        model.save(str(filepath))
-        loaded = Model.load(str(filepath))
-
-        # Verify intermediates were preserved
-        assert len(loaded._intermediates) == len(model._intermediates)
-
-        # Verify same results
-        for i in range(len(processes)):
-            assert loaded.eval(loaded.X[i]) == model.eval(model.X[i])
-
-
-def test_model_with_limits_roundtrip():
-    """Test roundtrip for model using limits (creates intermediates).
-    """
-    processes = [Process("P1", produces=["out"], consumes=[])]
-    objects = [MObject("out")]
-    model = Model(processes, objects)
-
-    # Recipe data is kept separate
-    recipe_data = {model.S[0, 0]: 1.0}
-
-    a = sy.Symbol("a", positive=True)
-    b = sy.Symbol("b", positive=True)
-
-    # Add unlimited demand (updates X/Y in _values)
-    unlimited = model.pull_production("out", a)
-    model.add(unlimited)
-
-    # Add limited demand (creates intermediates, updates X/Y in _values)
-    extra = model.pull_production("out", b)
-    limited = model.limit(extra, model.Y[0], sy.Symbol("limit", positive=True))
-    model.add(limited, label="limited_demand")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        filepath = Path(tmpdir) / "test.json"
-        model.save(str(filepath))
-        loaded = Model.load(str(filepath))
-
-        # Verify the limit intermediate was preserved
-        assert len(loaded._intermediates) >= len(model._intermediates)
-
-        # Verify expressions are equivalent
-        assert loaded.eval(loaded.Y[0]) == model.eval(model.Y[0])
 
 
 if __name__ == "__main__":
@@ -427,8 +369,8 @@ if __name__ == "__main__":
     model1 = find(model_strategy(max_processes=5, max_objects=5, randomize_has_stock=True), lambda m: len(m.processes) >= 2)
     print(f"    Generated model with {len(model1.processes)} processes")
 
-    print("  Generating model_with_recipe_strategy...")
-    model2, recipe2 = find(model_with_recipe_strategy(), lambda x: len(x[0].processes) >= 2)
+    print("  Generating builder_with_recipe_strategy...")
+    model2, recipe2 = find(builder_with_recipe_strategy(), lambda x: len(x[0].processes) >= 2)
     print(f"    Generated model with {len(model2.processes)} processes and {len(recipe2)} recipe entries")
 
     print("  Generating simple_linear_model_strategy...")

@@ -12,7 +12,7 @@ Model state can be saved/loaded using JSON serialisation. This allows you to:
 ### Saving a model
 
 ```python
-from flowprog.imperative_model import Model, Process, Object
+from flowprog import Model, Process, Object
 from rdflib import URIRef
 import sympy as sy
 
@@ -23,12 +23,13 @@ objects = [
     Object("input", MASS, has_market=False),
     Object("product", MASS, has_market=True),
 ]
-model = Model(processes, objects)
+builder = ModelBuilder(processes, objects)
 
 # Build up the model
 demand = sy.Symbol("demand", positive=True)
-model.add(model.pull_production("product", demand))
-model.add({model.S[1, 0]: 2.0, model.U[0, 0]: 1.0})
+builder.add(builder.pull_production("product", demand))
+
+model = builder.build({builder.S[1, 0]: 2.0, builder.U[0, 0]: 1.0})
 
 # Save with metadata
 model.save(
@@ -44,7 +45,7 @@ model.save(
 ### Loading a model
 
 ```python
-from flowprog.imperative_model import Model
+from flowprog import Model
 
 # Load the complete model state
 loaded_model = Model.load("my_model_v1.json")

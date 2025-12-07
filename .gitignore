@@ -6,3 +6,4 @@ __pycache__
 .doit.db*
 _build/
 /.hypothesis/
+/.DS_Store

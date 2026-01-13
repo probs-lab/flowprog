@@ -4,7 +4,19 @@ This Python package defines a framework for building up mass flow models using S
 
 ## Getting started
 
-Install `flowprog` -- it is not yet released on PyPI so this needs to be done locally or via git.
+Install `flowprog` -- it is not yet released on PyPI so this needs to be done locally or via git.  This takes only a few seconds.
+
+For example, using [uv](https://docs.astral.sh/uv):
+
+``` shellsession
+uv add https://github.com/probs-lab/flowprog/archive/refs/heads/main.zip
+```
+
+or using pip (with a suitable virtual environment activated):
+
+``` shellsession
+pip install https://github.com/probs-lab/flowprog/archive/refs/heads/main.zip
+```
 
 See the documentation in `docs/` for more details and examples.
 

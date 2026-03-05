@@ -89,7 +89,8 @@ class TestSaveLoadWithValues:
         model.save(str(filepath))
         loaded = ModelBuilder.load(str(filepath))
 
-        expr = loaded.eval(loaded.X[0])
+        m = loaded.build()
+        expr = m.eval(loaded.X[0])
         # Extract the symbol from the expression
         symbols = expr.free_symbols
         b_loaded = [s for s in symbols if s.name == "b"][0]
@@ -176,12 +177,13 @@ class TestComplexModel:
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
         loaded = ModelBuilder.load(str(filepath))
+        m = loaded.build()
 
         # Verify the expressions are preserved
-        assert loaded.eval(loaded.X[0]) == a * b / (c + 1)
-        assert loaded.eval(loaded.Y[0]) == sy.Max(a, b)
+        assert m.eval(loaded.X[0]) == a * b / (c + 1)
+        assert m.eval(loaded.Y[0]) == sy.Max(a, b)
         # Piecewise comparison is tricky, just check it evaluates
-        assert loaded.eval(loaded.X[1]) is not None
+        assert m.eval(loaded.X[1]) is not None
 
 class TestEdgeCases:
     """Test edge cases and error handling."""
@@ -204,25 +206,200 @@ class TestEdgeCases:
         with pytest.raises(FileNotFoundError):
             ModelBuilder.load("nonexistent_file.json")
 
-    def test_cross_references_preserved(self, tmp_path):
-        """Test that cross-references between IndexedBase are preserved."""
+
+class TestSaveLoadSteps:
+    """Test save/load preserves logical steps."""
+
+    def test_roundtrip_preserves_step_count(self, tmp_path):
+        """Test that the number of steps is preserved."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
         model = ModelBuilder(processes, objects)
 
-        # Create an expression that references Y
-        model.add({model.X[0]: model.Y[0] * 2})
+        model.add({model.X[0]: 3.5}, label="step1")
+        model.add({model.X[0]: 2.5}, label="step2")
 
         filepath = tmp_path / "test.json"
         model.save(str(filepath))
         loaded = ModelBuilder.load(str(filepath))
 
-        # Check that the expression was preserved correctly
-        expr = loaded._values[loaded.X[0]]
-        assert expr == loaded.Y[0] * 2
+        assert len(loaded._steps) == 2
 
-        # Verify the expression still contains Y[0] references
-        assert loaded.Y[0] in expr.free_symbols
+    def test_roundtrip_preserves_step_values(self, tmp_path):
+        """Test that step values are preserved."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        model = ModelBuilder(processes, objects)
+
+        model.add({model.X[0]: a * b}, label="symbolic_step")
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
+
+        step = loaded._steps[0]
+        assert step.values[loaded.X[0]] == a * b
+        assert step.description == "symbolic_step"
+
+    def test_roundtrip_preserves_step_descriptions(self, tmp_path):
+        """Test that step descriptions are preserved."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        model = ModelBuilder(processes, objects)
+
+        model.add({model.X[0]: 1}, label="first")
+        model.add({model.X[0]: 2})  # No label
+        model.add({model.X[0]: 3}, label="third")
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
+
+        assert loaded._steps[0].description == "first"
+        assert loaded._steps[1].description is None
+        assert loaded._steps[2].description == "third"
+
+    def test_loaded_builder_recompiles_correctly_after_add(self, tmp_path):
+        """Test that adding to a loaded builder produces correct results.
+
+        This is the key motivation: without steps, adding to a loaded builder
+        would lose previously accumulated values during recompilation.
+        """
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        model = ModelBuilder(processes, objects)
+
+        model.add({model.X[0]: 3.5}, label="initial")
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
+
+        # Add more to loaded builder
+        loaded.add({loaded.X[0]: 2.5}, label="after_load")
+        m = loaded.build()
+
+        # Should be 3.5 + 2.5 = 6.0, not just 2.5
+        assert m.eval(loaded.X[0]) == 6.0
+        assert loaded.get_history(loaded.X[0]) == ["initial", "after_load"]
+
+    def test_roundtrip_with_pull_production_steps(self, tmp_path):
+        """Test steps from pull_production are preserved and recompile correctly."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        model = ModelBuilder(processes, objects)
+
+        model.add(model.pull_production("out", a), label="demand")
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
+
+        original_m = model.build()
+        loaded_m = loaded.build()
+
+        # Recompile and check equivalence
+        assert loaded_m.eval(loaded.X[0]) == original_m.eval(model.X[0])
+        assert loaded_m.eval(loaded.Y[0]) == original_m.eval(model.Y[0])
+
+    def test_roundtrip_with_limit_transformation(self, tmp_path):
+        """Test steps with Limit transformations are preserved."""
+        processes = [Process("P1", produces=["out"], consumes=[])]
+        objects = [MObject("out")]
+        model = ModelBuilder(processes, objects)
+
+        unlimited = model.pull_production("out", a)
+        model.add(unlimited)
+
+        extra = model.pull_production("out", b)
+        limited = model.limit(extra, model.Y[0], sy.Symbol("cap", positive=True))
+        model.add(limited, label="limited")
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
+
+        assert len(loaded._steps) == 2
+        # Second step should have a Limit transformation
+        from flowprog.activities import Limit
+        assert len(loaded._steps[1].transformations) == 1
+        assert isinstance(loaded._steps[1].transformations[0], Limit)
+
+        original_m = model.build()
+        loaded_m = loaded.build()
+
+        # Values should match after recompile
+        assert loaded_m.eval(loaded.X[0]) == original_m.eval(model.X[0])
+
+    def test_roundtrip_with_allocation(self, tmp_path):
+        """Test steps with allocation (creates intermediates) are preserved."""
+        processes = [
+            Process("P1", produces=["mid"], consumes=["in"]),
+            Process("P2", produces=["mid"], consumes=["in"]),
+            Process("P3", produces=["out"], consumes=["mid"]),
+        ]
+        objects = [MObject("in"), MObject("mid", has_market=True), MObject("out")]
+        model = ModelBuilder(processes, objects)
+
+        model.add(
+            model.pull_production(
+                "mid", a, allocate_backwards={"mid": {"P1": 0.6, "P2": 0.4}}
+            ),
+            label="allocated",
+        )
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+        loaded = ModelBuilder.load(str(filepath))
+
+        assert len(loaded._steps) == 1
+        assert len(loaded._steps[0].intermediates) > 0
+
+        original_m = model.build()
+        loaded_m = loaded.build()
+
+        # Values should match
+        assert loaded_m.eval(loaded.X[0]) == original_m.eval(model.X[0])
+
+    def test_v1_0_file_loads_without_steps(self, tmp_path):
+        """Test backward compatibility: v1.0 files without steps still load."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        model = ModelBuilder(processes, objects)
+        model.add({model.X[0]: 3.5})
+
+        # Save normally then strip steps to simulate v1.0
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+
+        with open(filepath) as f:
+            data = json.load(f)
+        data["version"] = "1.0"
+        del data["steps"]
+        with open(filepath, 'w') as f:
+            json.dump(data, f)
+
+        loaded = ModelBuilder.load(str(filepath))
+        assert loaded._steps == []
+        # because we saved the ModelBuilder it no longer includes _values
+        assert loaded.build().eval(loaded.X[0]) == 0.0
+
+    def test_file_includes_steps_key(self, tmp_path):
+        """Test that saved JSON includes steps."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        model = ModelBuilder(processes, objects)
+        model.add({model.X[0]: 1})
+
+        filepath = tmp_path / "test.json"
+        model.save(str(filepath))
+
+        with open(filepath) as f:
+            data = json.load(f)
+
+        assert "steps" in data
+        assert data["version"] == "1.1"
+        assert len(data["steps"]) == 1
 
 
 class TestEvaluableModelSaveLoad:

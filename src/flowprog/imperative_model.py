@@ -46,6 +46,8 @@ class Model:
         """Define a model containing `processes` and `objects`."""
         # Create internal ModelBuilder to handle building operations
         self._builder = _ModelBuilder(processes, objects)
+        self._intermediate_counter = sy.numbered_symbols()
+        self._intermediates: list[tuple[sy.Expr, sy.Expr, str]] = []
 
     def __repr__(self):
         return f"Model(processes={repr(self.processes)}, objects={repr(self.objects)})"
@@ -84,11 +86,6 @@ class Model:
     def _history(self):
         """Access to internal history for backward compatibility."""
         return self._builder._history
-
-    @property
-    def _intermediates(self):
-        """Access to internal intermediates for backward compatibility."""
-        return self._builder._intermediates
 
     @property
     def _intermediate_symbols(self):
@@ -219,9 +216,11 @@ class Model:
         """Add `values` to model's symbols."""
         return self._builder.add(*values, label=label)
 
-    def _create_intermediate(self, value: sy.Expr, description: str) -> sy.Expr:
-        """Create intermediate symbol for value."""
-        return self._builder._create_intermediate(value, description)
+    # def _create_intermediate(self, value: sy.Expr, description: str) -> sy.Expr:
+    #     """Create intermediate symbol for value."""
+    #     new_sym = self._intermediate_counter.next()
+    #     self._intermediates.append((new_sym, value, description))
+    #     return new_sym
 
     def get_history(self, symbol: sy.Expr) -> list[str]:
         """Return history list for `symbol`."""
@@ -256,13 +255,15 @@ class Model:
         # Build model with recipe (fresh each time)
         model = self._builder.build(recipe_data)
 
+        # Resolve any structural symbols against compiled accumulated state
+        expr = self._builder._resolve_structural_symbols(expr)
+
         # Delegate to model
         return model.eval_intermediates(expr, other_values)
 
     def eval(self, symbol: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows."""
-        # For eval, we don't extract recipe because it operates on builder values
-        # directly without building a model
+        self._builder._compile()
         return self._builder.eval(symbol, values)
 
     def lambdify(self, data=None, expressions: Optional[dict] = None):

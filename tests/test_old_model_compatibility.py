@@ -389,10 +389,8 @@ class TestObjectBalanceCompatibility:
         old_cons_deficit = old_model.object_consumption_deficit("O2")
         new_cons_deficit = new_model.object_consumption_deficit("O2")
 
-        # Both should produce the same type of expression (Max with intermediates)
-        # We can't directly compare because intermediate symbols differ,
-        # but we can check they have the same structure
-        assert isinstance(old_prod_deficit, sy.Symbol)
-        assert isinstance(new_prod_deficit, sy.Symbol)
-        assert isinstance(old_cons_deficit, sy.Symbol)
-        assert isinstance(new_cons_deficit, sy.Symbol)
+        # Both should produce the same structural indexed expressions
+        assert isinstance(old_prod_deficit, sy.Indexed)
+        assert old_prod_deficit == new_prod_deficit
+        assert isinstance(old_cons_deficit, sy.Indexed)
+        assert old_cons_deficit == new_cons_deficit

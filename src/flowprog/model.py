@@ -17,6 +17,14 @@ import numpy as np
 import pandas as pd
 import logging
 
+from .activities import (
+    AdditionalActivity,
+    Limit,
+    create_intermediate,
+    merge_activities,
+)
+from .compilers import compile_sympy, compile_markdown
+
 
 _log = logging.getLogger(__name__)
 
@@ -113,6 +121,15 @@ class ModelStructure:
         self.S = sy.IndexedBase("S", shape=(N, M), nonnegative=True)
         self.U = sy.IndexedBase("U", shape=(N, M), nonnegative=True)
 
+        # Structural symbols for object-level queries (resolved by compiler)
+        self.Balance = sy.IndexedBase("Balance", shape=(N,))
+        self.ProductionDeficit = sy.IndexedBase(
+            "ProductionDeficit", shape=(N,), nonnegative=True
+        )
+        self.ConsumptionDeficit = sy.IndexedBase(
+            "ConsumptionDeficit", shape=(N,), nonnegative=True
+        )
+
     def __repr__(self):
         return f"ModelStructure(processes={len(self.processes)}, objects={len(self.objects)})"
 
@@ -146,8 +163,7 @@ class ModelStructure:
         """
         i = self.lookup_object(object_id)
         return [
-            self.processes[j].id
-            for j in self._processes_producing_object.get(i, [])
+            self.processes[j].id for j in self._processes_producing_object.get(i, [])
         ]
 
     def consumers_of(self, object_id: str) -> list[str]:
@@ -158,8 +174,7 @@ class ModelStructure:
         """
         i = self.lookup_object(object_id)
         return [
-            self.processes[j].id
-            for j in self._processes_consuming_object.get(i, [])
+            self.processes[j].id for j in self._processes_consuming_object.get(i, [])
         ]
 
     def expr(
@@ -222,6 +237,56 @@ class ModelStructure:
         else:
             raise ValueError(f"Unknown role {role!r}")
 
+    def _compute_object_balance(self, object_id, values):
+        """Compute (production - consumption) for an object from accumulated values."""
+        i = self.lookup_object(object_id)
+        flow_in = sum(
+            (
+                self.S[i, j] * values.get(self.Y[j], sy.S.Zero)
+                for j in self._processes_producing_object.get(i, [])
+            ),
+            sy.S.Zero,
+        )
+        flow_out = sum(
+            (
+                self.U[i, j] * values.get(self.X[j], sy.S.Zero)
+                for j in self._processes_consuming_object.get(i, [])
+            ),
+            sy.S.Zero,
+        )
+        return flow_in - flow_out
+
+    def resolve_structural_symbols(self, expr, values):
+        """Substitute structural symbols in an expression with their current values.
+
+        Resolves: Balance[i], ProductionDeficit[i], ConsumptionDeficit[i], X[j],
+        Y[j]
+
+        """
+        if not isinstance(expr, sy.Basic):
+            return expr
+
+        subs = {}
+        for sym in expr.atoms(sy.Indexed):
+            if sym.base == self.X or sym.base == self.Y:
+                subs[sym] = values.get(sym, sy.S.Zero)
+            elif sym.base == self.Balance:
+                idx = sym.indices[0]
+                obj_id = self.objects[idx].id
+                subs[sym] = self._compute_object_balance(obj_id, values)
+            elif sym.base == self.ProductionDeficit:
+                idx = sym.indices[0]
+                obj_id = self.objects[idx].id
+                balance = self._compute_object_balance(obj_id, values)
+                subs[sym] = sy.Max(0, -balance, evaluate=False)
+            elif sym.base == self.ConsumptionDeficit:
+                idx = sym.indices[0]
+                obj_id = self.objects[idx].id
+                balance = self._compute_object_balance(obj_id, values)
+                subs[sym] = sy.Max(0, balance, evaluate=False)
+
+        return expr.xreplace(subs) if subs else expr
+
 
 class ModelBuilder:
     """Build symbolic model logic step by step.
@@ -241,11 +306,11 @@ class ModelBuilder:
         """
         self.structure = ModelStructure(processes, objects)
 
-        # Building state (mutable)
-        self._values: dict[sy.Expr, sy.Expr] = defaultdict(lambda: sy.S.Zero)
-        self._history: dict[sy.Expr, list[str]] = {}
-        self._intermediates: list[tuple[sy.Expr, sy.Expr, str]] = []
-        self._intermediate_symbols = sy.numbered_symbols()
+        # Intermediate symbol counter (shared across all activities)
+        self._intermediate_counter = sy.numbered_symbols()
+
+        # Step recording
+        self._steps: list[AdditionalActivity] = []
 
     def __repr__(self):
         return f"ModelBuilder(structure={self.structure})"
@@ -316,7 +381,11 @@ class ModelBuilder:
         :param symbol: Sympy symbol to get history for
         :return: List of labels describing how this symbol's value was constructed
         """
-        return self._history.get(symbol, [])
+        return [
+            step.description
+            for step in self._steps
+            if step.description and symbol in step.values
+        ]
 
     def print_history(self, symbol: sy.Expr):
         """Print history of how this symbol was built (for debugging).
@@ -379,7 +448,10 @@ class ModelBuilder:
         until_objects=None,
         allocate_backwards=None,
     ):
-        """Pull production value backwards through the model until `until_objects`."""
+        """Pull production value backwards through the model until `until_objects`.
+
+        Returns an AdditionalActivity.
+        """
         if until_objects is None:
             until_objects = set()
         if allocate_backwards is None:
@@ -408,7 +480,7 @@ class ModelBuilder:
         elif len(processes) > 1:
             # allocate
             alphas = self._get_allocation(allocate_backwards, object_id, processes)
-            result = defaultdict(lambda: sy.S.Zero)
+            activities = []
             for j in processes:
                 pid = self.processes[j].id
                 if pid in alphas:
@@ -416,16 +488,16 @@ class ModelBuilder:
                     if sy.S(alpha).is_zero:
                         continue
                     output = production_value * alpha
-                    this_result = self.pull_process_output(
-                        pid,
-                        object_id,
-                        output,
-                        until_objects=until_objects,
-                        allocate_backwards=allocate_backwards,
+                    activities.append(
+                        self.pull_process_output(
+                            pid,
+                            object_id,
+                            output,
+                            until_objects=until_objects,
+                            allocate_backwards=allocate_backwards,
+                        )
                     )
-                    for k, v in this_result.items():
-                        result[k] += v
-            return result
+            return merge_activities(*activities)
         else:
             raise ValueError(f"No processes produce {object_id}")
 
@@ -436,7 +508,10 @@ class ModelBuilder:
         until_objects=None,
         allocate_forwards=None,
     ):
-        """Push consumption value forwards through the model until `until_objects`."""
+        """Push consumption value forwards through the model until `until_objects`.
+
+        Returns an AdditionalActivity.
+        """
         if until_objects is None:
             until_objects = set()
         if allocate_forwards is None:
@@ -485,7 +560,7 @@ class ModelBuilder:
         elif len(processes) > 1:
             # allocate
             betas = self._get_allocation(allocate_forwards, object_id, processes)
-            result = defaultdict(lambda: sy.S.Zero)
+            activities = []
             for j in processes:
                 pid = self.processes[j].id
                 if pid in betas:
@@ -494,16 +569,16 @@ class ModelBuilder:
                     if sy.S(beta).is_zero:
                         continue
                     output = consumption_value * beta
-                    this_result = self.push_process_input(
-                        self.processes[j].id,
-                        object_id,
-                        output,
-                        until_objects=until_objects,
-                        allocate_forwards=allocate_forwards,
+                    activities.append(
+                        self.push_process_input(
+                            self.processes[j].id,
+                            object_id,
+                            output,
+                            until_objects=until_objects,
+                            allocate_forwards=allocate_forwards,
+                        )
                     )
-                    for k, v in this_result.items():
-                        result[k] += v
-            return result
+            return merge_activities(*activities)
         else:
             raise ValueError(f"No processes consume {object_id}")
 
@@ -519,6 +594,8 @@ class ModelBuilder:
 
         If `object_id` is None, set the process output magnitude $Y_j$ directly.
         Otherwise set $S_{ij} Y_j$.
+
+        Returns an AdditionalActivity.
         """
         if until_objects is None:
             until_objects = set()
@@ -536,9 +613,12 @@ class ModelBuilder:
         until_objects = set(until_objects) | {object_id}
 
         # Save this value to an intermediate symbol with a description
-        value = self._create_intermediate(
+        intermediates: list[tuple[sy.Symbol, sy.Expr, str]] = []
+        value = create_intermediate(
+            intermediates,
             value,
             f"pull_process_output value of {object_id} from {process_id}",
+            self._intermediate_counter,
         )
 
         # Calculate required process activity
@@ -585,11 +665,15 @@ class ModelBuilder:
                 until_objects=until_objects,
                 allocate_backwards=allocate_backwards,
             )
-            # merge sum
-            for k, v in more.items():
+            # merge
+            for k, v in more.values.items():
                 result[k] += v
+            intermediates.extend(more.intermediates)
 
-        return result
+        return AdditionalActivity(
+            values=dict(result),
+            intermediates=intermediates,
+        )
 
     def push_process_input(
         self,
@@ -603,6 +687,8 @@ class ModelBuilder:
 
         If `object_id` is None, set the process input magnitude $X_j$ directly.
         Otherwise set $U_{ij} X_j$.
+
+        Returns an AdditionalActivity.
         """
         if until_objects is None:
             until_objects = set()
@@ -620,9 +706,12 @@ class ModelBuilder:
         until_objects = set(until_objects) | {object_id}
 
         # Save this value to an intermediate symbol with a description
-        value = self._create_intermediate(
+        intermediates: list[tuple[sy.Symbol, sy.Expr, str]] = []
+        value = create_intermediate(
+            intermediates,
             value,
             f"push_process_input value of {object_id} from {process_id}",
+            self._intermediate_counter,
         )
 
         # Calculate required process activity
@@ -669,159 +758,124 @@ class ModelBuilder:
                 until_objects=until_objects,
                 allocate_forwards=allocate_forwards,
             )
-            # merge sum
-            for k, v in more.items():
+            # merge
+            for k, v in more.values.items():
                 result[k] += v
+            intermediates.extend(more.intermediates)
 
-        return result
+        return AdditionalActivity(
+            values=dict(result),
+            intermediates=intermediates,
+        )
 
     def object_balance(self, object_id: str) -> sy.Expr:
-        """Return (production - consumption) for `object_id`."""
+        """Return structural symbol for (production - consumption) of `object_id`.
+
+        The compiler resolves this against accumulated state.
+        """
         i = self._lookup_object(object_id)
-        flow_in: sy.Expr = sum(  # type: ignore
-            self.S[i, j] * self._values[self.Y[j]]
-            for j in self.structure._processes_producing_object.get(i, [])
-            if self._values[self.Y[j]] is not None
-        )
-        flow_out: sy.Expr = sum(  # type: ignore
-            self.U[i, j] * self._values[self.X[j]]
-            for j in self.structure._processes_consuming_object.get(i, [])
-            if self._values[self.X[j]] is not None
-        )
-        _log.debug(
-            "balance_object: balance at %s: %s in, %s out", object_id, flow_in, flow_out
-        )
-        return flow_in - flow_out
+        return self.structure.Balance[i]
 
     def object_production_deficit(self, object_id: str) -> sy.Expr:
-        """Return Max(0, consumption - production) for `object_id`."""
-        value = sy.Max(0, -self.object_balance(object_id), evaluate=False)
-        return self._create_intermediate(
-            value, f"object_production_deficit for {object_id}"
-        )
+        """Return structural symbol for Max(0, consumption - production) of `object_id`.
+
+        The compiler resolves this against accumulated state.
+        """
+        i = self._lookup_object(object_id)
+        return self.structure.ProductionDeficit[i]
 
     def object_consumption_deficit(self, object_id: str) -> sy.Expr:
-        """Return Max(0, production - consumption) for `object_id`."""
-        value = sy.Max(0, self.object_balance(object_id), evaluate=False)
-        return self._create_intermediate(
-            value, f"object_consumption_deficit for {object_id}"
-        )
+        """Return structural symbol for Max(0, production - consumption) of `object_id`.
 
-    def limit(self, values, expr, limit):
-        """Scale down `values` as needed to avoid exceeding `limit` for `expr`.
-
-        Note: This function assumes that process coefficients (S and U matrices)
-        are non-zero. Zero coefficients will cause division by zero errors when
-        expressions are evaluated.
+        The compiler resolves this against accumulated state.
         """
-        M = len(self.processes)
-        limit = (
-            S(limit)
-            .subs({self.X[j]: self._values[self.X[j]] for j in range(M)})
-            .subs({self.Y[j]: self._values[self.Y[j]] for j in range(M)})
-        )
-        current = (
-            S(expr)
-            .subs({self.X[j]: self._values[self.X[j]] for j in range(M)})
-            .subs({self.Y[j]: self._values[self.Y[j]] for j in range(M)})
-        )
-        proposed = (
-            S(expr)
-            .subs({self.X[j]: self._values[self.X[j]] + values.get(self.X[j], 0) for j in range(M)})
-            .subs({self.Y[j]: self._values[self.Y[j]] + values.get(self.Y[j], 0) for j in range(M)})
-        )
+        i = self._lookup_object(object_id)
+        return self.structure.ConsumptionDeficit[i]
 
-        # Calculate the difference
-        diff = proposed - current
+    def limit(self, activity, expr, limit):
+        """Apply a capacity limit transformation to an AdditionalActivity.
 
-        # Protect against division by zero when lambdified to numpy.
-        # When lambdify() converts Piecewise to numpy.select(), numpy evaluates
-        # ALL branches before selecting. To prevent division by zero, we use
-        # Max with a tiny epsilon to ensure the denominator is never exactly zero.
-        # We use epsilon = 1e-10 which is small enough to not affect real values
-        # but large enough for numerical stability.
-        epsilon = S(10) ** -10  # Small value to prevent division by zero
-        safe_diff = sy.Max(diff, epsilon)
+        Returns a new AdditionalActivity with a Limit transformation appended.
+        The expression and limit_value contain raw X[j]/Y[j] and structural
+        symbols (Balance, ProductionDeficit, etc.) that the compiler resolves.
 
-        return {
-            k: sy.Piecewise(
-                # Already exceeded the limit, don't add any more
-                (S.Zero, current >= limit),
-                # New proposed value is less than or equal to the limit, no modification needed
-                (v, proposed <= limit),
-                # Proposed value needs to be scaled down to just reach limit
-                # Use safe_diff (with epsilon protection) to avoid division by zero when lambdified
-                ((limit - current) / safe_diff * v, True),
-                evaluate=False,
-            )
-            for k, v in values.items()
-        }
+        :param activity: AdditionalActivity (or bare dict for backward compat)
+        :param expr: Expression to constrain
+        :param limit: Upper bound
+        """
+        if isinstance(activity, dict):
+            activity = AdditionalActivity(values=activity)
+
+        return AdditionalActivity(
+            values=activity.values,
+            intermediates=activity.intermediates,
+            transformations=activity.transformations
+            + [
+                Limit(
+                    expression=S(expr),
+                    limit_value=S(limit),
+                )
+            ],
+            description=activity.description,
+        )
 
     def add(self, *values, label=None):
-        """Add `values` to model's symbols."""
-        if label is None:
-            label = "<unknown>"
-        symbols = set()
+        """Record activities as model steps.
+
+        Accepts AdditionalActivity objects or bare dicts (backward compat).
+        """
         for v in values:
-            for sym, new_value in v.items():
-                self._values[sym] += new_value
-            symbols.update(v.keys())
-        for symbol in symbols:
-            self._history.setdefault(symbol, [])
-            self._history[symbol].append(label)
+            if isinstance(v, dict):
+                activity = AdditionalActivity(values=v)
+            else:
+                activity = v
 
-    def _create_intermediate(self, value: sy.Expr, description: str) -> sy.Expr:
-        """Create intermediate symbol for value."""
-        new_sym = next(self._intermediate_symbols)
-        self._intermediates.append((new_sym, value, description))
-        return new_sym
+            if label is not None and activity.description is None:
+                activity = AdditionalActivity(
+                    values=activity.values,
+                    intermediates=activity.intermediates,
+                    transformations=activity.transformations,
+                    description=label,
+                )
 
-    def eval_intermediates(self, expr: sy.Expr, values=None):
-        """Substitute in `values` to intermediate expressions and then flows."""
-        if values is None:
-            values = {}
-        intermediates = [
-            (
-                sym,
-                (
-                    sym_value.xreplace(values)
-                    if isinstance(sym_value, sy.Expr)
-                    else sym_value
-                ),
-            )
-            for sym, sym_value, _ in self._intermediates
-        ]
-        return expr.subs(intermediates[::-1])
+            self._steps.append(activity)
 
-    def eval(self, symbol: sy.Expr, values=None):
-        """Substitute in `values` to intermediate expressions and then flows."""
-        if not isinstance(symbol, sy.Indexed) or symbol.base not in (self.X, self.Y):
-            raise ValueError(f"symbol must be X[i] or Y[i]: {symbol!r}")
-        symbol_value = self._values[symbol]
-        return self.eval_intermediates(symbol_value, values)
-
-    def build(self, recipe_data=None) -> 'Model':
+    def build(self, recipe_data=None) -> "Model":
         """Create evaluable Model from this builder.
+
+        Compiles recorded steps into sympy expressions, then creates
+        an evaluable Model.
 
         :param recipe_data: Recipe data in format: ``{process_id: {consumes: {object_id: value}, produces: {object_id: value}}}``
         :return: Evaluable Model with recipe data
         """
+        values, intermediates = compile_sympy(self.structure, self._steps)
         return Model(
-            structure=self.structure,  # Share structure!
-            values=self._values,
-            intermediates=self._intermediates,
+            structure=self.structure,
+            values=values,
+            intermediates=intermediates,
             recipe_data=recipe_data,
         )
+
+    def describe(self) -> str:
+        """Return a Markdown-formatted description of the model and its steps.
+
+        Useful for debugging and understanding the model-building process.
+
+        :return: Markdown string
+
+        **Example**::
+
+            print(builder.describe())
+        """
+        return compile_markdown(self.structure, self._steps)
 
     def save(self, filepath: str, metadata: Optional[dict] = None):
         """Save the complete model state to a JSON file.
 
-        This saves all information needed to recreate the model without rerunning
-        model.add() calls, including:
+        This saves all information needed to recreate the model, including:
         - Model structure (processes and objects)
-        - All assigned values (_values)
-        - Intermediate symbols and expressions (_intermediates)
-        - History of how values were assigned (_history)
+        - Logical steps (the sequence of AdditionalActivity objects)
 
         Symbolic expressions are serialized using SymPy's srepr() which produces
         canonical string representations that can be exactly reconstructed.
@@ -835,10 +889,11 @@ class ModelBuilder:
         """
         import json
         from datetime import datetime
+        from .activities import serialize_step
 
         # Build the data structure
         data = {
-            "version": "1.0",
+            "version": "1.1",
             "metadata": metadata or {},
             "saved_at": datetime.now().isoformat(),
             "processes": [
@@ -858,26 +913,10 @@ class ModelBuilder:
                 }
                 for o in self.objects
             ],
-            "values": {
-                sy.srepr(k): sy.srepr(v)
-                for k, v in self._values.items()
-                if v != sy.S.Zero  # Don't save default zero values
-            },
-            "intermediates": [
-                {
-                    "symbol": sy.srepr(sym),
-                    "expr": sy.srepr(expr),
-                    "label": label,
-                }
-                for sym, expr, label in self._intermediates
-            ],
-            "history": {
-                sy.srepr(k): v  # keys are expressions, values are already strings
-                for k, v in self._history.items()
-            },
+            "steps": [serialize_step(step) for step in self._steps],
         }
 
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
 
         _log.info(f"Model saved to {filepath}")
@@ -886,17 +925,13 @@ class ModelBuilder:
     def load(cls, filepath: str) -> "ModelBuilder":
         """Load a model from a JSON file created by ModelBuilder.save().
 
-        This recreates the complete model state including all assigned values,
-        intermediate symbols, and history.
+        This recreates the complete model state including logical steps,
+        assigned values, intermediate symbols.
 
         The model is reconstructed by:
         1. Creating the model structure (processes and objects)
         2. Deserializing all symbolic expressions using sympify()
-        3. Restoring values, intermediates, and history
-
-        Note: Due to SymPy's internal caching, IndexedBase objects (X, Y, S, U)
-        created during model initialization will be automatically used by the
-        deserialized expressions.
+        3. Restoring logical steps (if present in v1.1+ files)
 
         :param filepath: Path to the saved model file
         :return: Reconstructed ModelBuilder instance
@@ -906,14 +941,15 @@ class ModelBuilder:
             builder = ModelBuilder.load("my_model.json")
         """
         import json
+        from .activities import deserialize_step
 
         with open(filepath) as f:
             data = json.load(f)
 
-        # Check version compatibility
-        if data.get("version") != "1.0":
+        version = data.get("version", "1.0")
+        if version not in ("1.0", "1.1"):
             _log.warning(
-                f"Model file version {data.get('version')} may not be compatible "
+                f"Model file version {version} may not be compatible "
                 "with this version of flowprog"
             )
 
@@ -941,45 +977,22 @@ class ModelBuilder:
         builder = cls(processes, objects)
 
         # Prepare namespace for sympify - include the builder's IndexedBase objects
-        # so that deserialized expressions reference them
+        # and structural query symbols so that deserialized expressions reference them
         namespace = {
-            'X': builder.X,
-            'Y': builder.Y,
-            'S': builder.S,
-            'U': builder.U,
+            "X": builder.X,
+            "Y": builder.Y,
+            "S": builder.S,
+            "U": builder.U,
+            "Balance": builder.structure.Balance,
+            "ProductionDeficit": builder.structure.ProductionDeficit,
+            "ConsumptionDeficit": builder.structure.ConsumptionDeficit,
         }
 
-        # Restore values
-        builder._values = defaultdict(lambda: sy.S.Zero)
-        for k_str, v_str in data["values"].items():
-            try:
-                k = sy.sympify(k_str, locals=namespace)
-                v = sy.sympify(v_str, locals=namespace)
-                builder._values[k] = v
-            except Exception as e:
-                _log.error(f"Failed to deserialize value {k_str}: {e}")
-                raise
-
-        # Restore intermediates
-        builder._intermediates = []
-        for item in data["intermediates"]:
-            try:
-                sym = sy.sympify(item["symbol"], locals=namespace)
-                expr = sy.sympify(item["expr"], locals=namespace)
-                builder._intermediates.append((sym, expr, item["label"]))
-            except Exception as e:
-                _log.error(f"Failed to deserialize intermediate {item['symbol']}: {e}")
-                raise
-
-        # Restore history
-        builder._history = {}
-        for k_str, v in data["history"].items():
-            try:
-                k = sy.sympify(k_str, locals=namespace)
-                builder._history[k] = v
-            except Exception as e:
-                _log.error(f"Failed to deserialize history for {k_str}: {e}")
-                raise
+        # Restore logical steps (v1.1+)
+        if "steps" in data:
+            builder._steps = [
+                deserialize_step(step_data, namespace) for step_data in data["steps"]
+            ]
 
         _log.info(f"Model loaded from {filepath}")
         if "metadata" in data and data["metadata"]:
@@ -1015,7 +1028,7 @@ class Model:
         self.structure = structure
 
         # Frozen symbolic expressions
-        self._values = values
+        self._values = defaultdict(lambda: sy.S.Zero, values)
         self._intermediates = intermediates
 
         # Recipe data storage
@@ -1026,7 +1039,9 @@ class Model:
             self.set_recipe(recipe_data)
 
     def __repr__(self):
-        return f"Model(structure={self.structure}, has_recipe={bool(self._recipe_by_id)})"
+        return (
+            f"Model(structure={self.structure}, has_recipe={bool(self._recipe_by_id)})"
+        )
 
     # Convenience accessors (delegate to structure)
     @property
@@ -1253,15 +1268,20 @@ class Model:
         ]
         return expr.subs(intermediates[::-1])
 
-    def eval(self, symbol: sy.Expr, values=None):
-        """Evaluate a symbol with given values (recipe automatically included).
+    def eval(self, expr: sy.Expr, values=None):
+        """Evaluate an expression with given values (recipe automatically included).
 
-        :param symbol: Symbol to evaluate
+        :param symbol: Symbol or Sympy expression to evaluate
         :param values: Additional values to substitute
         :return: Evaluated value
+
+        Structural symbols like X[j] and Deficit[i] are replaced by their
+        accumulated state values.
+
         """
-        symbol_value = self._values[symbol]
-        return self.eval_intermediates(symbol_value, values)
+        # Resolve any structural symbols in the expression against final accumulated state
+        resolved_expr = self.structure.resolve_structural_symbols(expr, self._values)
+        return self.eval_intermediates(resolved_expr, values)
 
     def to_flows(self, values=None, flow_ids=None):
         """Return flows data frame with variables substituted.
@@ -1391,9 +1411,7 @@ class Model:
         subexpressions = [
             (
                 sym,
-                expr.xreplace(data_for_intermediates).xreplace(
-                    data_for_intermediates
-                ),
+                expr.xreplace(data_for_intermediates).xreplace(data_for_intermediates),
             )
             for sym, expr, _ in self._intermediates
         ]
@@ -1479,7 +1497,7 @@ class Model:
             "recipe": self._recipe_by_id,  # Save the ID-based recipe
         }
 
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
 
         _log.info(f"Model saved to {filepath}")
@@ -1551,10 +1569,10 @@ class Model:
 
         # Prepare namespace for sympify
         namespace = {
-            'X': structure.X,
-            'Y': structure.Y,
-            'S': structure.S,
-            'U': structure.U,
+            "X": structure.X,
+            "Y": structure.Y,
+            "S": structure.S,
+            "U": structure.U,
         }
 
         # Restore values
@@ -1610,7 +1628,3 @@ def convert_indexed_symbols(data):
         else:
             converted[k] = v
     return converted
-
-
-# For backward compatibility during transition
-# (Will be updated as we implement the full API)

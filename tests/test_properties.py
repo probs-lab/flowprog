@@ -1,8 +1,9 @@
 import pytest
 import numpy as np
 from hypothesis import strategies as st, given, assume, example, settings
+import sympy as sy
 from sympy.abc import a, b, c
-from flowprog.imperative_model import *
+from flowprog.model import ModelBuilder, Model, Process, Object
 
 from .model_strategies import MASS, MObject, has_cycle_through_market, model_builder_strategy
 
@@ -18,25 +19,26 @@ def test_limit_with_symbols(initial, consumption, limit_value):
         Process("P2", consumes=["mid"], produces=["out"]),
     ]
     objects = [MObject("in"), MObject("mid", True), MObject("out")]
-    m = Model(processes, objects)
+    builder = ModelBuilder(processes, objects)
 
     sy.var("a, b, c", real=True)
 
     # First flows
-    m.add(m.pull_production("out", a))
+    builder.add(builder.pull_production("out", a))
 
     # Add extra demand with limit
-    unlimited_extra = m.pull_production("out", b)
-    limited_extra = m.limit(unlimited_extra, m.Y[0], c)
-    m.add(limited_extra)
+    unlimited_extra = builder.pull_production("out", b)
+    limited_extra = builder.limit(unlimited_extra, builder.Y[0], c)
+    builder.add(limited_extra)
 
     # We should not have exceeded the limit
     recipe_data = {
-        m.U[0, 0]: 1.0,
-        m.S[1, 0]: 0.6,
-        m.U[1, 1]: 2.2,
-        m.S[2, 1]: 2.0,
+        builder.U[0, 0]: 1.0,
+        builder.S[1, 0]: 0.6,
+        builder.U[1, 1]: 2.2,
+        builder.S[2, 1]: 2.0,
     }
+    m = builder.build(recipe_data)
     value = m.eval(m.Y[0]).subs({
         a: initial,
         b: consumption,
@@ -69,11 +71,11 @@ def test_limit_with_symbols(initial, consumption, limit_value):
 class TestSimpleModel:
     """Tests using simple single-process model (in → out)."""
 
-    def _create_simple_model(self):
+    def _create_simple_model_builder(self):
         """Create a simple model with one process."""
         processes = [Process("P1", consumes=["in"], produces=["out"])]
         objects = [MObject("in"), MObject("out")]
-        return Model(processes, objects)
+        return ModelBuilder(processes, objects)
 
     @given(
         st.floats(min_value=0, max_value=1e6, allow_infinity=False, allow_nan=False),
@@ -82,26 +84,26 @@ class TestSimpleModel:
     )
     def test_limit_with_zero_initial_demand(self, initial, extra, limit_value):
         """Test limit() when initial demand could be zero."""
-        m = self._create_simple_model()
+        builder = self._create_simple_model_builder()
         sy.var("a, b, c", real=True)
 
         # Set initial production (could be zero)
-        m.add(m.pull_production("out", a))
+        builder.add(builder.pull_production("out", a))
 
         # Add extra demand with limit
-        unlimited_extra = m.pull_production("out", b)
-        limited_extra = m.limit(unlimited_extra, m.Y[0], c)
-        m.add(limited_extra)
+        unlimited_extra = builder.pull_production("out", b)
+        limited_extra = builder.limit(unlimited_extra, builder.Y[0], c)
+        builder.add(limited_extra)
 
         # Evaluate with actual values
         data = {
             a: initial,
             b: extra,
             c: limit_value,
-            m.U[0, 0]: 1.0,
-            m.S[1, 0]: 1.0,
+            builder.U[0, 0]: 1.0,
+            builder.S[1, 0]: 1.0,
         }
-
+        m = builder.build()
         value = m.eval(m.Y[0]).subs(data)
         assert value >= 0
         assert value <= max(initial + extra, limit_value) + 1e-6
@@ -112,31 +114,32 @@ class TestSimpleModel:
     )
     def test_various_model_methods_with_zero_demand(self, demand, method_name):
         """Test various model methods with potentially zero demand values."""
-        m = self._create_simple_model()
+        builder = self._create_simple_model_builder()
         sy.var("d", real=True)
 
         # Call different model methods
         if method_name == "pull_production":
-            result = m.pull_production("out", d)
+            result = builder.pull_production("out", d)
         elif method_name == "pull_process_output":
-            result = m.pull_process_output("P1", "out", d)
+            result = builder.pull_process_output("P1", "out", d)
         elif method_name == "push_process_input":
-            result = m.push_process_input("P1", "in", d)
+            result = builder.push_process_input("P1", "in", d)
 
-        m.add(result)
+        builder.add(result)
 
         data = {
             d: demand,
-            m.U[0, 0]: 1.0,
-            m.S[1, 0]: 1.0,
+            builder.U[0, 0]: 1.0,
+            builder.S[1, 0]: 1.0,
         }
+        m = builder.build()
 
         if method_name in ["pull_production", "pull_process_output"]:
-            value = m.eval(m.Y[0]).subs(data)
+            value = float(m.eval(m.Y[0]).subs(data))
         else:
-            value = m.eval(m.X[0]).subs(data)
+            value = float(m.eval(m.X[0]).subs(data))
 
-        assert value == demand
+        assert value == pytest.approx(demand)
 
 
 # ============================================================================
@@ -154,41 +157,41 @@ class TestBranchingModel:
             Process("P3", consumes=["mid"], produces=["out2"]),
         ]
         objects = [MObject("in"), MObject("mid", True), MObject("out1"), MObject("out2")]
-        m = Model(processes, objects)
+        builder = ModelBuilder(processes, objects)
 
         recipe_data = {
-            m.U[0, 0]: 1.0,
-            m.S[1, 0]: 1.0,
-            m.U[1, 1]: 1.0,
-            m.S[2, 1]: 1.0,
-            m.U[1, 2]: 1.0,
-            m.S[3, 2]: 1.0,
+            builder.U[0, 0]: 1.0,
+            builder.S[1, 0]: 1.0,
+            builder.U[1, 1]: 1.0,
+            builder.S[2, 1]: 1.0,
+            builder.U[1, 2]: 1.0,
+            builder.S[3, 2]: 1.0,
         }
-        return m, recipe_data
+        return builder, recipe_data
 
     @given(st.floats(min_value=0, allow_infinity=False),
         st.floats(min_value=0, allow_infinity=False),
         st.floats(min_value=0, allow_infinity=False))
     @example(2, 3, 10)
     def test_limit_can_be_arbitrary_expression(self, initial1, initial2, consumption):
-        m, recipe_data = self._create_branching_model()
+        builder, recipe_data = self._create_branching_model()
         sy.var("a, b, c", real=True)
 
         # First flows
-        m.add(
-            m.pull_production("out1", a, until_objects={"mid"}),
-            m.pull_production("out2", b, until_objects={"mid"}),
+        builder.add(
+            builder.pull_production("out1", a, until_objects={"mid"}),
+            builder.pull_production("out2", b, until_objects={"mid"}),
         )
 
         # Add extra demand with limit
-        unlimited_extra = m.pull_process_output("P1", "mid", c)
-        limit_expr = m.X[1] * m.U[1, 1] + m.X[2] * m.U[1, 2]
-        limited_extra = m.limit(
+        unlimited_extra = builder.pull_process_output("P1", "mid", c)
+        limit_expr = builder.X[1] * builder.U[1, 1] + builder.X[2] * builder.U[1, 2]
+        limited_extra = builder.limit(
             unlimited_extra,
-            m.Y[0] * m.S[1, 0],
+            builder.Y[0] * builder.S[1, 0],
             limit_expr,
         )
-        m.add(limited_extra)
+        builder.add(limited_extra)
 
         # We should not have exceeded the limit
         data = {
@@ -197,6 +200,7 @@ class TestBranchingModel:
             c: consumption,
             **recipe_data,
         }
+        m = builder.build()
         value = m.eval(m.Y[0]).subs(data)
         # Use tolerance-based comparisons to handle floating-point precision errors
         # (e.g., 0.29/29.0 = 0.009999999999999998, not exactly 0.01)
@@ -219,21 +223,21 @@ class TestBranchingModel:
     )
     def test_complex_model_with_limit_and_balance(self, supply, demand1, demand2):
         """Test limit() and object_balance together in branching model."""
-        m, recipe_data = self._create_branching_model()
+        builder, recipe_data = self._create_branching_model()
         sy.var("a, b, c", real=True)
 
         # Initial production and consumption
-        m.add(
-            m.push_consumption("in", a, until_objects={"mid"}),
-            m.pull_production("out1", b, until_objects={"mid"}),
+        builder.add(
+            builder.push_consumption("in", a, until_objects={"mid"}),
+            builder.pull_production("out1", b, until_objects={"mid"}),
         )
 
         # Balance extra demand for `out2`, but only up to available excess of `mid`
-        proposed = m.pull_production("out2", c, until_objects={"mid"})
-        expr_to_limit = m.expr("ProcessInput", process_id="P3", object_id="mid")
-        limit = m.object_consumption_deficit("mid")
-        m.add(
-            m.limit(proposed, expr_to_limit, limit)
+        proposed = builder.pull_production("out2", c, until_objects={"mid"})
+        expr_to_limit = builder.expr("ProcessInput", process_id="P3", object_id="mid")
+        limit = builder.object_consumption_deficit("mid")
+        builder.add(
+            builder.limit(proposed, expr_to_limit, limit)
         )
 
         # Evaluate
@@ -243,14 +247,15 @@ class TestBranchingModel:
             c: demand2,
             **recipe_data
         }
+        m = builder.build()
 
-        assert m.eval(m.Y[0]).subs(data) == supply
-        assert m.eval(m.Y[1]).subs(data) == demand1
-        assert m.eval(m.Y[2]).subs(data) <= demand2  # may be less based on limit
+        assert float(m.eval(m.Y[0]).subs(data)) == pytest.approx(supply)
+        assert float(m.eval(m.Y[1]).subs(data)) == pytest.approx(demand1)
+        assert float(m.eval(m.Y[2]).subs(data)) <= demand2 + 1e-10  # may be less based on limit
         if supply >= demand1 + demand2 and demand2 >= (supply - demand1):
             # If we have sufficient in->mid compared to mid->out1 and mid->out2,
             # it will balance
-            assert m.eval_intermediates(m.object_balance("mid")).subs(data) == 0
+            assert float(m.eval(builder.object_balance("mid")).subs(data)) == pytest.approx(0, abs=1e-10)
 
     @given(
         st.floats(min_value=0, max_value=1e6, allow_infinity=False, allow_nan=False),
@@ -259,15 +264,17 @@ class TestBranchingModel:
     def test_object_balance_with_various_flows(self, demand1, demand2):
         """Test mass balance is zero when not using until_objects.
         """
-        m, recipe_data = self._create_branching_model()
+        builder, recipe_data = self._create_branching_model()
 
-        m.add(
-            m.pull_production("out1", demand1),
-            m.pull_production("out2", demand2),
+        builder.add(
+            builder.pull_production("out1", demand1),
+            builder.pull_production("out2", demand2),
         )
 
+        m = builder.build()
+
         # Check balance
-        balance = m.eval_intermediates(m.object_balance("mid")).subs(recipe_data)
+        balance = m.eval(builder.object_balance("mid")).subs(recipe_data)
         assert abs(balance) < 1e-6
 
     @given(
@@ -280,25 +287,25 @@ class TestBranchingModel:
         """Test limit() where limit expression involves a process not directly in the limited flow.
         Uses P2 for initial demand and P3 for extra demand, with limit on combined output.
         """
-        m, recipe_data = self._create_branching_model()
+        builder, recipe_data = self._create_branching_model()
         sy.var("a, b, c", real=True)
 
         # First flows: demand out1
-        m.add(m.pull_production("out1", a))
+        builder.add(builder.pull_production("out1", a))
 
         # Add extra demand for out2 with limit
-        unlimited_extra = m.pull_production("out2", b)
+        unlimited_extra = builder.pull_production("out2", b)
         test_expr = (
-            m.expr("ProcessOutput", process_id="P2", object_id="out1") +
-            m.expr("ProcessOutput", process_id="P3", object_id="out2")
+            builder.expr("ProcessOutput", process_id="P2", object_id="out1") +
+            builder.expr("ProcessOutput", process_id="P3", object_id="out2")
         )
         limit_expr = c
-        limited_extra = m.limit(
+        limited_extra = builder.limit(
             unlimited_extra,
             test_expr,
             limit_expr,
         )
-        m.add(limited_extra)
+        builder.add(limited_extra)
 
         # We should not have exceeded the limit
         data = {
@@ -307,12 +314,13 @@ class TestBranchingModel:
             c: capacity,
             **recipe_data,
         }
-        value1 = m.eval(m.Y[1]).subs(data)
-        value2 = m.eval(m.Y[2]).subs(data)
-        assert value1 == initial_demand, "initial demand satisfied exactly"
-        assert value1 + value2 <= max(initial_demand, capacity), "limit applied"
+        m = builder.build()
+        value1 = float(m.eval(m.Y[1]).subs(data))
+        value2 = float(m.eval(m.Y[2]).subs(data))
+        assert value1 == pytest.approx(initial_demand), "initial demand satisfied exactly"
+        assert value1 + value2 <= max(initial_demand, capacity) + 1e-10, "limit applied"
         if initial_demand + extra_demand < capacity:
-            assert value2 == extra_demand
+            assert value2 == pytest.approx(extra_demand)
 
 
 # ============================================================================

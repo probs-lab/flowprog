@@ -296,9 +296,9 @@ def test_loaded_builder_can_be_extended(builder_and_recipe):
         loaded.add({loaded.X[0]: new_value}, label="after_load")
 
         # Verify the new value was added
-        assert loaded.eval(loaded.X[0]) != builder.eval(builder.X[0]) or new_value in loaded.eval(
-            loaded.X[0]
-        ).free_symbols
+        loaded_m = loaded.build()
+        original_m = builder.build()
+        assert loaded_m.eval(loaded.X[0]) != original_m.eval(builder.X[0])
 
         # Verify history was updated
         if "after_load" in str(loaded.get_history(loaded.X[0])):

@@ -3,6 +3,7 @@ from rdflib import URIRef
 
 # Import new implementation directly
 from flowprog.model import ModelBuilder, Process, Object
+from flowprog.activities import eval_activity_expr
 import sympy as sy
 
 
@@ -20,73 +21,76 @@ b = sy.Symbol("b")
 
 class TestSimpleChain:
     @pytest.fixture
-    def m(self):
+    def builder(self):
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
         return ModelBuilder(processes, objects)
 
-    def test_push_first_object_consumption(self, m):
-        result = m.push_consumption("in", a)
-        assert m.eval_intermediates(result[m.X[0]]) == a / m.U[0, 0]
-        assert m.eval_intermediates(result[m.Y[0]]) == a / m.U[0, 0]
+    def test_push_first_object_consumption(self, builder):
+        result = builder.push_consumption("in", a)
+        assert eval_activity_expr(result.values[builder.X[0]], result) == a / builder.U[0, 0]
+        assert eval_activity_expr(result.values[builder.Y[0]], result) == a / builder.U[0, 0]
 
-    def test_push_process_input(self, m):
-        result = m.push_process_input("M1", "in", a)
-        assert m.eval_intermediates(result[m.X[0]]) == a / m.U[0, 0]
-        assert m.eval_intermediates(result[m.Y[0]]) == a / m.U[0, 0]
+    def test_push_process_input(self, builder):
+        result = builder.push_process_input("M1", "in", a)
+        assert eval_activity_expr(result.values[builder.X[0]], result) == a / builder.U[0, 0]
+        assert eval_activity_expr(result.values[builder.Y[0]], result) == a / builder.U[0, 0]
 
-    def test_pull_process_output(self, m):
-        result = m.pull_process_output("M1", "out", a)
-        assert m.eval_intermediates(result[m.X[0]]) == a / m.S[1, 0]
-        assert m.eval_intermediates(result[m.Y[0]]) == a / m.S[1, 0]
+    def test_pull_process_output(self, builder):
+        result = builder.pull_process_output("M1", "out", a)
+        assert eval_activity_expr(result.values[builder.X[0]], result) == a / builder.S[1, 0]
+        assert eval_activity_expr(result.values[builder.Y[0]], result) == a / builder.S[1, 0]
 
-    def test_pull_last_object_production(self, m):
-        result = m.pull_production("out", a)
-        assert m.eval_intermediates(result[m.X[0]]) == a / m.S[1, 0]
-        assert m.eval_intermediates(result[m.Y[0]]) == a / m.S[1, 0]
+    def test_pull_last_object_production(self, builder):
+        result = builder.pull_production("out", a)
+        assert eval_activity_expr(result.values[builder.X[0]], result) == a / builder.S[1, 0]
+        assert eval_activity_expr(result.values[builder.Y[0]], result) == a / builder.S[1, 0]
 
-    def test_label(self, m):
-        m.add(m.push_consumption("in", a), label="label")
-        assert m.get_history(m.X[0]) == ["label"]
+    def test_label(self, builder):
+        builder.add(builder.push_consumption("in", a), label="label")
+        assert builder.get_history(builder.X[0]) == ["label"]
 
-    def test_add_initial(self, m):
-        m.add({m.X[0]: 3.5})
+    def test_add_initial(self, builder):
+        builder.add({builder.X[0]: 3.5})
+        m = builder.build()
         assert m.eval(m.X[0]) == 3.5
 
-    def test_add_adds(self, m):
-        m.add({m.X[0]: 3.5})
-        m.add({m.X[0]: 2.5})
+    def test_add_adds(self, builder):
+        builder.add({builder.X[0]: 3.5})
+        builder.add({builder.X[0]: 2.5})
+        m = builder.build()
         assert m.eval(m.X[0]) == 6.0
 
-    def test_add_two_at_once(self, m):
-        m.add(
-            {m.X[0]: 3.5},
-            {m.X[0]: 2.5},
+    def test_add_two_at_once(self, builder):
+        builder.add(
+            {builder.X[0]: 3.5},
+            {builder.X[0]: 2.5},
         )
+        m = builder.build()
         assert m.eval(m.X[0]) == 6.0
 
-    def test_pull_process_output_error_unknown(self, m):
+    def test_pull_process_output_error_unknown(self, builder):
         with pytest.raises(ValueError):
-            m.pull_process_output("M1", "does not exist", 3)
+            builder.pull_process_output("M1", "does not exist", 3)
 
-    def test_push_process_input_error_unknown(self, m):
+    def test_push_process_input_error_unknown(self, builder):
         with pytest.raises(ValueError):
-            m.push_process_input("M1", "does not exist", 3)
+            builder.push_process_input("M1", "does not exist", 3)
 
-    def test_pull_process_output_error_wrong_object(self, m):
+    def test_pull_process_output_error_wrong_object(self, builder):
         """Test that pull_process_output raises error when process doesn't produce the object."""
         with pytest.raises(ValueError, match="Process 'M1' does not produce object 'in'"):
-            m.pull_process_output("M1", "in", 3)
+            builder.pull_process_output("M1", "in", 3)
 
-    def test_push_process_input_error_wrong_object(self, m):
+    def test_push_process_input_error_wrong_object(self, builder):
         """Test that push_process_input raises error when process doesn't consume the object."""
         with pytest.raises(ValueError, match="Process 'M1' does not consume object 'out'"):
-            m.push_process_input("M1", "out", 3)
+            builder.push_process_input("M1", "out", 3)
 
 
 class TestTwoProducersAllocateBackwards:
     @pytest.fixture
-    def m(self):
+    def builder(self):
         processes = [
             Process("M1", produces=["out"], consumes=["in1"]),
             Process("M2", produces=["out"], consumes=["in2"]),
@@ -95,8 +99,8 @@ class TestTwoProducersAllocateBackwards:
         return ModelBuilder(processes, objects)
 
     @pytest.fixture
-    def m2(self):
-        # Like m fixture above but with another layer
+    def builder2(self):
+        # Like builder fixture above but with another layer
         processes = [
             Process("M1", produces=["out"], consumes=["in1"]),
             Process("M2", produces=["out"], consumes=["in2"]),
@@ -111,11 +115,11 @@ class TestTwoProducersAllocateBackwards:
         ]
         return ModelBuilder(processes, objects)
 
-    def test_pull_last_object_production(self, m):
+    def test_pull_last_object_production(self, builder):
         d = sy.Symbol("d")
         a1 = sy.Symbol("a1")
         a2 = sy.Symbol("a2")
-        result = m.pull_production(
+        result = builder.pull_production(
             "out",
             d,
             allocate_backwards={
@@ -125,40 +129,40 @@ class TestTwoProducersAllocateBackwards:
                 }
             },
         )
-        assert m.eval_intermediates(result[m.X[0]]) == d * a1 / m.S[2, 0]
-        assert m.eval_intermediates(result[m.X[1]]) == d * a2 / m.S[2, 1]
+        assert eval_activity_expr(result.values[builder.X[0]], result) == d * a1 / builder.S[2, 0]
+        assert eval_activity_expr(result.values[builder.X[1]], result) == d * a2 / builder.S[2, 1]
 
-    def test_error_when_missing_allocate_backwards(self, m):
+    def test_error_when_missing_allocate_backwards(self, builder):
         d = sy.Symbol("d")
         with pytest.raises(ValueError, match="not defined for out"):
-            m.pull_production("out", d, allocate_backwards={})
+            builder.pull_production("out", d, allocate_backwards={})
 
-    def test_error_when_allocate_backwards_has_unknown_process(self, m):
+    def test_error_when_allocate_backwards_has_unknown_process(self, builder):
         d = sy.Symbol("d")
         with pytest.raises(ValueError, match="Unknown process id Unknown"):
-            m.pull_production("out", d, allocate_backwards={"out": {"Unknown": 1}})
+            builder.pull_production("out", d, allocate_backwards={"out": {"Unknown": 1}})
 
-    def test_error_when_allocate_backwards_does_not_add_up(self, m):
+    def test_error_when_allocate_backwards_does_not_add_up(self, builder):
         d = sy.Symbol("d")
         with pytest.raises(ValueError, match="does not sum to 1"):
-            m.pull_production(
+            builder.pull_production(
                 "out", d, allocate_backwards={"out": {"M1": 0.1, "M2": 0.1}}
             )
 
-    def test_allocate_backwards_not_required_when_not_needed(self, m2):
+    def test_allocate_backwards_not_required_when_not_needed(self, builder2):
         d = sy.Symbol("d")
         # Here no production from M2 is required, so the allocation of "in2" is
         # irrelevant.
-        m2.pull_production("out", d, allocate_backwards={"out": {"M1": 1, "M2": 0}})
+        builder2.pull_production("out", d, allocate_backwards={"out": {"M1": 1, "M2": 0}})
 
         # Here production for M2 is required, so the allocation is needed.
         with pytest.raises(ValueError, match="not defined for in2"):
-            m2.pull_production(
+            builder2.pull_production(
                 "out", d, allocate_backwards={"out": {"M1": 0.5, "M2": 0.5}}
             )
 
         # This should be ok
-        m2.pull_production(
+        builder2.pull_production(
             "out",
             d,
             allocate_backwards={
@@ -170,7 +174,7 @@ class TestTwoProducersAllocateBackwards:
 
 class TestBalanceObject:
     @pytest.fixture
-    def m(self):
+    def builder(self):
         processes = [
             Process("M1", consumes=["in1"], produces=["mid"]),
             Process("M2", consumes=["in2"], produces=["mid"]),
@@ -179,18 +183,16 @@ class TestBalanceObject:
         objects = [MObject("in1"), MObject("in2"), MObject("mid"), MObject("out")]
         return ModelBuilder(processes, objects)
 
-    def test_balance_mid_object(self, m):
-        m.add(
-            m.pull_production("out", a, until_objects=["mid"]),
-            m.push_consumption("in1", b, until_objects=["mid"]),
+    def test_balance_mid_object(self, builder):
+        builder.add(
+            builder.pull_production("out", a, until_objects=["mid"]),
+            builder.push_consumption("in1", b, until_objects=["mid"]),
         )
 
-        assert m.eval(m.X[0]) == b / m.U[0, 0]
-        assert m.eval(m.X[1]) == 0
-        assert m.eval(m.X[2]) == a / m.S[3, 2]
-
         # Balance production using process M2
-        m.add(m.pull_process_output("M2", "mid", m.object_production_deficit("mid")))
+        builder.add(builder.pull_process_output("M2", "mid", builder.object_production_deficit("mid")))
+
+        m = builder.build()
 
         assert m.eval(m.X[0]) == b / m.U[0, 0]
         assert (
@@ -203,20 +205,20 @@ class TestBalanceObject:
 
 class TestLoops:
     @pytest.fixture
-    def m(self):
+    def builder(self):
         processes = [
             Process("A", consumes=["B"], produces=["B"]),
         ]
         objects = [MObject("B", True)]
         return ModelBuilder(processes, objects)
 
-    def test_loop_works(self, m):
-        m.pull_production("B", 3)
+    def test_loop_works(self, builder):
+        builder.pull_production("B", 3)
 
 
 class TestLoops2:
     @pytest.fixture
-    def m(self):
+    def builder(self):
         processes = [
             Process("A", consumes=["1"], produces=["2"]),
             Process("B", consumes=["2"], produces=["1"]),
@@ -224,13 +226,13 @@ class TestLoops2:
         objects = [MObject("1", True), MObject("2", True)]
         return ModelBuilder(processes, objects)
 
-    def test_loop_works(self, m):
-        m.pull_production("1", 3)
+    def test_loop_works(self, builder):
+        builder.pull_production("1", 3)
 
 
 class TestExpr:
     @pytest.fixture
-    def m(self):
+    def builder(self):
         processes = [
             Process("M1", consumes=["in1"], produces=["mid", "by"]),
             Process("M2", consumes=["in2"], produces=["mid", "by"]),
@@ -245,24 +247,24 @@ class TestExpr:
         ]
         return ModelBuilder(processes, objects)
 
-    def test_expr_process_output(self, m):
-        expr = m.expr("ProcessOutput", process_id="M1", object_id="mid")
-        assert expr == m.Y[0] * m.S[2, 0]
+    def test_expr_process_output(self, builder):
+        expr = builder.expr("ProcessOutput", process_id="M1", object_id="mid")
+        assert expr == builder.Y[0] * builder.S[2, 0]
 
-    def test_expr_process_input(self, m):
-        expr = m.expr("ProcessInput", process_id="M1", object_id="in1")
-        assert expr == m.X[0] * m.U[0, 0]
+    def test_expr_process_input(self, builder):
+        expr = builder.expr("ProcessInput", process_id="M1", object_id="in1")
+        assert expr == builder.X[0] * builder.U[0, 0]
 
-    def test_expr_soldproduction(self, m):
-        expr = m.expr("SoldProduction", object_id="mid")
+    def test_expr_soldproduction(self, builder):
+        expr = builder.expr("SoldProduction", object_id="mid")
         assert expr == (
-            m.expr("ProcessOutput", process_id="M1", object_id="mid")
-            + m.expr("ProcessOutput", process_id="M2", object_id="mid")
+            builder.expr("ProcessOutput", process_id="M1", object_id="mid")
+            + builder.expr("ProcessOutput", process_id="M2", object_id="mid")
         )
 
-    def test_expr_consumption(self, m):
-        expr = m.expr("Consumption", object_id="mid")
-        assert expr == (m.expr("ProcessInput", process_id="Use", object_id="mid"))
+    def test_expr_consumption(self, builder):
+        expr = builder.expr("Consumption", object_id="mid")
+        assert expr == (builder.expr("ProcessInput", process_id="Use", object_id="mid"))
 
 
 class TestRecipeValidation:

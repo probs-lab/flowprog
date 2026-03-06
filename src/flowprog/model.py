@@ -1281,7 +1281,14 @@ class Model:
         """
         # Resolve any structural symbols in the expression against final accumulated state
         resolved_expr = self.structure.resolve_structural_symbols(expr, self._values)
-        return self.eval_intermediates(resolved_expr, values)
+        result = self.eval_intermediates(resolved_expr, values)
+        # Substitute recipe values that may remain in the expression
+        # (e.g. S[i,j] or U[i,j] that appeared in accumulated values)
+        if isinstance(result, sy.Basic):
+            recipe_syms = self.get_recipe_as_symbols()
+            if recipe_syms:
+                result = result.xreplace(recipe_syms)
+        return result
 
     def to_flows(self, values=None, flow_ids=None):
         """Return flows data frame with variables substituted.

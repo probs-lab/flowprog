@@ -1,28 +1,40 @@
-[tool.poetry]
+[project]
 name = "flowprog"
-authors = [
-    "Rick Lupton <mail@ricklupton.name>",
-]
+version = "0.1.0"
 description = "Define material flows models as programs"
 readme = "README.md"
 license = "MIT"
-version = "0.1.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "Rick Lupton", email = "mail@ricklupton.name"},
+]
+dependencies = [
+    "sympy>=1.11.1",
+    "pandas>=2.2.0",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.8,<3.12"
-sympy = "^1.11.1"
-pandas = "^2.2.0"
-# TODO: add appropriate rdflib dependence
+[project.optional-dependencies]
+numpyro = [
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "numpyro>=0.12",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.2.2"
-hypothesis = "^6.70.0"
-jupyter-book = "^0.15.0"
-jupyterlab = "^3.6.1"
-ipysankeywidget = "^0.5.0"
-sphinx-probs-rdf = "^0.4.1"
-jupytext = "^1.14.0"
+[dependency-groups]
+dev = [
+    "pytest>=7.2.2",
+    "hypothesis>=6.70.0",
+    "jupyter-book>=0.15.0",
+    "jupyterlab>=3.6.1",
+    "ipysankeywidget>=0.5.0",
+    "sphinx-probs-rdf>=0.4.1",
+    "jupytext>=1.14.0",
+    "arviz>=0.15",
+    "matplotlib>=3.5",
+    "rdflib>=6.0",
+    "flowprog[numpyro]",
+]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"

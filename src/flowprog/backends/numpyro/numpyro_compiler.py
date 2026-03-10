@@ -217,11 +217,14 @@ class CompiledModel:
             for name, prior in self.param_priors.items()
         }
 
-    def likelihood(self, result, obs):
+    def likelihood(self, result, obs, params=None):
         """Emit numpyro.sample(obs=...) for each observation."""
 
         if self.observations is None:
             return
+
+        if params is None:
+            params = {}
 
         for o in self.observations:
             predicted = sympy_expr_to_jax(
@@ -231,11 +234,11 @@ class CompiledModel:
             # Resolve sigma
             if isinstance(o.sigma, str):
                 sigma_name = o.sigma
-                sigma_symbol = sy.Symbol(sigma_name)
-                if sigma_symbol in result:
-                    sigma_val = result[sigma_symbol]
-                elif sigma_name in result:
-                    sigma_val = result[sigma_name]
+                # sigma_symbol = sy.Symbol(sigma_name)
+                # if sigma_symbol in params:
+                #     sigma_val = params[sigma_symbol]
+                if sigma_name in params:
+                    sigma_val = params[sigma_name]
                 # TODO could define sigma_priors on CompiledModel and do this still
                 # elif (prior_dist := spec._lookup(sigma_name)) is not None:
                 #     sigma_val = numpyro.sample(sigma_name, prior_dist)
@@ -275,10 +278,10 @@ class CompiledModel:
         if obs_plate is not None:
             with obs_plate:
                 self.store_process_activities(result)
-                self.likelihood(result, obs)
+                self.likelihood(result, obs, params)
         else:
             self.store_process_activities(result)
-            self.likelihood(result, obs)
+            self.likelihood(result, obs, params)
 
 
 def _normalize_recipe(structure, recipe_data):

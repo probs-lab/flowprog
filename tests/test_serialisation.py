@@ -382,7 +382,7 @@ class TestSaveLoadSteps:
         loaded = ModelBuilder.load(str(filepath))
         assert loaded._steps == []
         # because we saved the ModelBuilder it no longer includes _values
-        assert loaded.build().eval(loaded.X[0]) == 0.0
+        assert float(loaded.build().eval(loaded.X[0])) == 0.0
 
     def test_file_includes_steps_key(self, tmp_path):
         """Test that saved JSON includes steps."""

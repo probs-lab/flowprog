@@ -309,6 +309,26 @@ def compile_numpyro(
         # Maps sympy symbols/indexed to JAX values
         env = {}
 
+        # Define shared observation plate (size inferred from obs data).
+        # This plate is reused for all sample sites that vary per data point:
+        # currently just observation likelihoods, but available for
+        # per-datapoint latent variables (e.g. surplus parameterisation).
+        obs_plate = None
+        if obs is not None:
+            obs_sizes = {
+                name: data.shape[0] if data.ndim > 0 else None
+                for name, data in obs.items()
+            }
+            unique_sizes = set(obs_sizes.values())
+            if len(unique_sizes) > 1:
+                raise ValueError(
+                    f"All observation arrays must have the same length, "
+                    f"got: {obs_sizes}"
+                )
+            N_obs = unique_sizes.pop()
+            if N_obs is not None:
+                obs_plate = numpyro.plate("obs_plate", N_obs)
+
         # Sample or look up each free parameter
         for param_name, param_sym in free_params.items():
             if param_name in params:
@@ -353,16 +373,24 @@ def compile_numpyro(
                 else:
                     acc[sym] = val
 
-        # Track deterministic quantities for all process activities
-        for j, proc in enumerate(structure.processes):
-            xj = structure.X[j]
-            yj = structure.Y[j]
-            if xj in acc:
-                numpyro.deterministic(f"X_{j}_{proc.id}", acc[xj])
-            if yj in acc:
-                numpyro.deterministic(f"Y_{j}_{proc.id}", acc[yj])
+        # Track deterministic quantities for all process activities.
+        # Wrap in obs_plate so arviz labels the data-point dimension correctly.
+        def _register_deterministics():
+            for j, proc in enumerate(structure.processes):
+                xj = structure.X[j]
+                yj = structure.Y[j]
+                if xj in acc:
+                    numpyro.deterministic(f"X_{j}_{proc.id}", acc[xj])
+                if yj in acc:
+                    numpyro.deterministic(f"Y_{j}_{proc.id}", acc[yj])
 
-        # Emit observations
+        if obs_plate is not None:
+            with obs_plate:
+                _register_deterministics()
+        else:
+            _register_deterministics()
+
+        # Emit observations inside the shared plate
         all_env = {**acc, **env}
         for observation in observations:
             predicted = _walk(
@@ -388,31 +416,20 @@ def compile_numpyro(
             obs_data = None
             if obs is not None and observation.name in obs:
                 obs_data = obs[observation.name]
+
+            if obs_plate is not None:
+                with obs_plate:
+                    numpyro.sample(
+                        f"obs_{observation.name}",
+                        observation.noise(predicted, sigma_val),
+                        obs=obs_data,
+                    )
+            else:
                 numpyro.sample(
                     f"obs_{observation.name}",
                     observation.noise(predicted, sigma_val),
                     obs=obs_data,
                 )
-
-            # # Use plate for multiple observations (1-d array with len > 1)
-            # obs_ndim = getattr(obs_data, 'ndim', 0) if obs_data is not None else 0
-            # if obs_ndim >= 1 and obs_data.shape[0] > 1:
-            #     with numpyro.plate(f"obs_{observation.name}_plate", obs_data.shape[0]):
-            #         numpyro.sample(
-            #             f"obs_{observation.name}",
-            #             observation.noise(predicted, sigma_val),
-            #             obs=obs_data,
-            #         )
-            # else:
-            #     # Scalar or single-element observation
-            #     scalar_obs = obs_data
-            #     if scalar_obs is not None and obs_ndim >= 1:
-            #         scalar_obs = obs_data[0]
-            #     numpyro.sample(
-            #         f"obs_{observation.name}",
-            #         observation.noise(predicted, sigma_val),
-            #         obs=scalar_obs,
-            #     )
 
     return model
 

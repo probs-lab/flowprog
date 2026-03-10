@@ -6,7 +6,7 @@ This is the default compiler used by ModelBuilder._compile().
 from collections import defaultdict
 import sympy as sy
 
-from ..activities import AdditionalActivity, Limit
+from ..activities import AdditionalActivity, Limit, Floor
 
 
 def compile_sympy(structure, steps):
@@ -38,6 +38,10 @@ def compile_sympy(structure, steps):
         for transform in step.transformations:
             if isinstance(transform, Limit):
                 resolved_values = _compile_limit(
+                    resolved_values, transform, values, structure
+                )
+            elif isinstance(transform, Floor):
+                resolved_values = _compile_floor(
                     resolved_values, transform, values, structure
                 )
             else:
@@ -99,6 +103,51 @@ def _compile_limit(values_dict, limit_transform, accumulated_values, structure):
             (sy.S.Zero, current >= limit_resolved),
             (v, proposed <= limit_resolved),
             ((limit_resolved - current) / safe_diff * v, True),
+            evaluate=False,
+        )
+        for k, v in values_dict.items()
+    }
+
+
+def _compile_floor(values_dict, floor_transform, accumulated_values, structure):
+    """Compile a Floor transformation into Piecewise expressions.
+
+    The Floor's expression and threshold contain raw structural symbols.
+    The compiler resolves them to determine:
+    - 'proposed': expression value after adding this step's contribution
+    - 'threshold': the minimum acceptable value
+
+    If proposed >= threshold, the step values pass through unchanged.
+    Otherwise they are zeroed out (the process doesn't operate at all).
+    """
+    # 'proposed' = expression evaluated with (accumulated + step contribution)
+    M = len(structure.processes)
+    proposed_values = dict(accumulated_values)
+    for j in range(M):
+        xj = structure.X[j]
+        yj = structure.Y[j]
+        if xj in values_dict:
+            proposed_values[xj] = (
+                accumulated_values.get(xj, sy.S.Zero) + values_dict[xj]
+            )
+        if yj in values_dict:
+            proposed_values[yj] = (
+                accumulated_values.get(yj, sy.S.Zero) + values_dict[yj]
+            )
+
+    proposed = structure.resolve_structural_symbols(
+        floor_transform.expression, proposed_values
+    )
+
+    # 'threshold' resolved against accumulated state
+    threshold_resolved = structure.resolve_structural_symbols(
+        floor_transform.threshold, accumulated_values
+    )
+
+    return {
+        k: sy.Piecewise(
+            (v, proposed >= threshold_resolved),
+            (sy.S.Zero, True),
             evaluate=False,
         )
         for k, v in values_dict.items()

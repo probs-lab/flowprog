@@ -12,12 +12,8 @@ Available compilers:
 
 from .sympy import compile_sympy
 from .markdown import compile_markdown
-from .numpyro import compile_numpyro, Observation, ModelSpec
 
 __all__ = [
     "compile_sympy",
     "compile_markdown",
-    "compile_numpyro",
-    "Observation",
-    "ModelSpec",
 ]

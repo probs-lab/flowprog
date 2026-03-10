@@ -4,11 +4,7 @@ These replace the discontinuous operations (Max, Piecewise) used by the
 sympy compiler with smooth JAX-compatible alternatives.
 """
 
-import jax
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp
-
 
 def smooth_max(a, b, beta=100.0):
     """Smooth approximation to max(a, b) using log-sum-exp.
@@ -19,9 +15,7 @@ def smooth_max(a, b, beta=100.0):
     # max(a, b) ≈ (1/beta) * log(exp(beta*a) + exp(beta*b))
     # = a + (1/beta) * log(1 + exp(beta*(b - a)))  [for stability when a > b]
     m = jnp.maximum(a, b)
-    return m + (1.0 / beta) * jnp.log(
-        jnp.exp(beta * (a - m)) + jnp.exp(beta * (b - m))
-    )
+    return m + (1.0 / beta) * jnp.log(jnp.exp(beta * (a - m)) + jnp.exp(beta * (b - m)))
 
 
 def softplus(x, beta=100.0):

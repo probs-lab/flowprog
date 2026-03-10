@@ -27,10 +27,31 @@ class Limit:
 
     expression: sy.Expr
     limit_value: sy.Expr
+    name: str | None = None
 
 
-# Union type for all transformations (extensible with Floor, Clamp, etc.)
-ActivityTransformation = Union[Limit]
+@dataclass(frozen=True)
+class Floor:
+    """Constrain an expression to be at least a threshold, or else zero.
+
+    If the *proposed* value of `expression` (accumulated + this step's
+    contribution) would be below `threshold`, the entire step is scaled
+    to zero.  Otherwise the step is kept as-is.
+
+    This implements a "minimum turndown" constraint: either the process
+    operates above a minimum level, or it doesn't operate at all.
+
+    Both expression and threshold contain raw structural symbols that the
+    compiler resolves against accumulated state.
+    """
+
+    expression: sy.Expr
+    threshold: sy.Expr
+    name: str | None = None
+
+
+# Union type for all transformations (extensible with Clamp, etc.)
+ActivityTransformation = Union[Limit, Floor]
 
 
 @dataclass
@@ -66,6 +87,14 @@ def _serialize_transformation(transform):
             "type": "Limit",
             "expression": sy.srepr(transform.expression),
             "limit_value": sy.srepr(transform.limit_value),
+            "name": transform.name,
+        }
+    if isinstance(transform, Floor):
+        return {
+            "type": "Floor",
+            "expression": sy.srepr(transform.expression),
+            "threshold": sy.srepr(transform.threshold),
+            "name": transform.name,
         }
     raise TypeError(f"Unknown transformation type: {type(transform)}")
 
@@ -76,6 +105,13 @@ def _deserialize_transformation(data, namespace):
         return Limit(
             expression=sy.sympify(data["expression"], locals=namespace),
             limit_value=sy.sympify(data["limit_value"], locals=namespace),
+            name=data["name"],
+        )
+    if data["type"] == "Floor":
+        return Floor(
+            expression=sy.sympify(data["expression"], locals=namespace),
+            threshold=sy.sympify(data["threshold"], locals=namespace),
+            name=data["name"],
         )
     raise ValueError(f"Unknown transformation type: {data['type']}")
 

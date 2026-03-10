@@ -20,6 +20,7 @@ import logging
 from .activities import (
     AdditionalActivity,
     Limit,
+    Floor,
     create_intermediate,
     merge_activities,
 )
@@ -814,6 +815,36 @@ class ModelBuilder:
                 Limit(
                     expression=S(expr),
                     limit_value=S(limit),
+                )
+            ],
+            description=activity.description,
+        )
+
+    def floor(self, activity, expr, threshold):
+        """Apply a minimum turndown transformation to an AdditionalActivity.
+
+        Returns a new AdditionalActivity with a Floor transformation appended.
+        If the proposed value of `expr` (after adding this step) would be below
+        `threshold`, the entire step is zeroed out.
+
+        This implements a "minimum turndown" constraint: either the process
+        operates above the minimum level, or it doesn't operate at all.
+
+        :param activity: AdditionalActivity (or bare dict for backward compat)
+        :param expr: Expression to check against threshold
+        :param threshold: Minimum acceptable value
+        """
+        if isinstance(activity, dict):
+            activity = AdditionalActivity(values=activity)
+
+        return AdditionalActivity(
+            values=activity.values,
+            intermediates=activity.intermediates,
+            transformations=activity.transformations
+            + [
+                Floor(
+                    expression=S(expr),
+                    threshold=S(threshold),
                 )
             ],
             description=activity.description,

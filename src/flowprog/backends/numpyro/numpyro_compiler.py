@@ -35,27 +35,6 @@ class Observation:
     sigma: object = 1.0  # float or str
 
 
-@dataclass
-class ModelSpec:
-    """Specification of priors for model parameters.
-
-    Maps parameter names (str or sympy Symbol) to their prior distributions
-    (numpyro.distributions instances).
-    """
-
-    priors: dict = field(default_factory=dict)
-
-    def _lookup(self, param_name: str):
-        """Look up a prior by string name, accepting both str and Symbol keys."""
-        if param_name in self.priors:
-            return self.priors[param_name]
-        # Try matching Symbol keys by name
-        for key, value in self.priors.items():
-            if isinstance(key, sy.Basic) and getattr(key, "name", None) == param_name:
-                return value
-        return None
-
-
 class NumpyroState:
     def __init__(self, structure, constants, initial_env, beta=100.0):
         self.structure = structure
@@ -104,8 +83,6 @@ class CompiledModel:
         """Compile flowprog steps ready for numpyro sampling.
 
         :param builder: ModelBuilder (with structure and steps attributes)
-        :param spec: ModelSpec — prior specifications for parameters (optional;
-            if None, all free parameters must be passed as keyword arguments)
         :param recipe_data: dict — recipe values in one of two formats:
             - ID-based: {process_id: {consumes: {obj_id: val}, produces: {obj_id: val}}}
             - Sympy-indexed: {S[i, j]: val, U[i, j]: val}

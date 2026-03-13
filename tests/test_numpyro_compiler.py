@@ -25,7 +25,7 @@ import numpyro.infer
 import sympy as sy
 
 from flowprog.model import ModelBuilder, Process, Object
-from flowprog.backends.numpyro import CompiledModel, Observation, ModelSpec
+from flowprog.backends.numpyro import CompiledModel, Observation
 from flowprog.backends.numpyro.transform_handlers import SurplusLimitHandler
 
 from .model_strategies import MObject
@@ -178,8 +178,8 @@ class TestNumpyroCompilerBasic:
 
         assert abs(float(trace["X_0"]["value"]) - 3.5) < 1e-6
 
-    def test_compiles_with_spec_priors(self):
-        """Parameters with priors in spec are sampled."""
+    def test_compiles_with_param_priors(self):
+        """Parameters with priors specified are sampled."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
         builder = ModelBuilder(processes, objects)
@@ -187,12 +187,12 @@ class TestNumpyroCompilerBasic:
         f = sy.Symbol("f", positive=True)
         builder.add({builder.X[0]: f}, label="test")
 
-        spec = ModelSpec(priors={"f": dist.Normal(3.5, 0.1)})
+        param_priors = {"f": dist.Normal(3.5, 0.1)}
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
         compiled_model = CompiledModel.from_steps(
             builder._steps,
             builder.structure,
-            spec=spec,
+            param_priors=param_priors,
             recipe_data=recipe,
         )
 
@@ -204,7 +204,7 @@ class TestNumpyroCompilerBasic:
         assert trace["f"]["type"] == "sample"
 
     def test_spec_priors_accept_symbol_keys(self):
-        """ModelSpec.priors accepts sympy Symbol keys in addition to strings."""
+        """param_priors accepts sympy Symbol keys in addition to strings."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
         builder = ModelBuilder(processes, objects)
@@ -212,12 +212,12 @@ class TestNumpyroCompilerBasic:
         f = sy.Symbol("f", positive=True)
         builder.add({builder.X[0]: f}, label="test")
 
-        spec = ModelSpec(priors={f: dist.Normal(3.5, 0.1)})
+        param_priors = {f: dist.Normal(3.5, 0.1)}
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
         compiled_model = CompiledModel.from_steps(
             builder._steps,
             builder.structure,
-            spec=spec,
+            param_priors=param_priors,
             recipe_data=recipe,
         )
 
@@ -479,12 +479,12 @@ class TestObservations:
             sigma=0.1,
         )
 
-        spec = ModelSpec(priors={"f": dist.Normal(5.0, 10.0)})
+        param_priors = {"f": dist.Normal(5.0, 10.0)}
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
         compiled_model = CompiledModel.from_steps(
             builder._steps,
             builder.structure,
-            spec=spec,
+            param_priors=param_priors,
             recipe_data=recipe,
             observations=[obs_low, obs_high],
         )

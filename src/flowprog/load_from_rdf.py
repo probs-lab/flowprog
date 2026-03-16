@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
-import logging
-log = logging.getLogger(__name__)
-
 from itertools import groupby
 from rdflib import Namespace
+from .imperative_model import Process, Object, Model
+
+import logging
+
+log = logging.getLogger(__name__)
 
 
 PROBS_RECIPE = Namespace("http://w3id.org/probs-lab/process-recipe#")
@@ -67,10 +69,7 @@ def _recipe_items_to_tuples(items):
     for x in items:
         assert x["quantity"] is not None, "missing value"
 
-    tuples = [
-        (x["object"], x["metric"], float(x["quantity"]))
-        for x in items
-    ]
+    tuples = [(x["object"], x["metric"], float(x["quantity"])) for x in items]
     return tuples
 
 
@@ -163,8 +162,6 @@ def strip_uri(uri):
     return str(uri).rpartition("/")[2]
 
 
-from .imperative_model import Process, Object, Model
-
 def query_endpoint(rdfox, model_uri, **kwargs) -> tuple[list, list]:
     """Query to find object types and recipe builders."""
 
@@ -177,7 +174,9 @@ def query_endpoint(rdfox, model_uri, **kwargs) -> tuple[list, list]:
     return object_types, recipe_builders
 
 
-def build_model(object_types: list, recipe_builders: list, **kwargs) -> tuple[Model, dict]:
+def build_model(
+    object_types: list, recipe_builders: list, **kwargs
+) -> tuple[Model, dict]:
     processes = [
         Process(
             id=strip_uri(k),
@@ -218,13 +217,19 @@ def build_model(object_types: list, recipe_builders: list, **kwargs) -> tuple[Mo
                 i = object_idx[obj]
                 expected_metric = objects[i].metric
                 if metric != expected_metric:
-                    raise ValueError("Expected metric %r for %r but got %r" % (str(expected_metric), str(obj), str(metric)))
+                    raise ValueError(
+                        "Expected metric %r for %r but got %r"
+                        % (str(expected_metric), str(obj), str(metric))
+                    )
                 recipe_data[model.U[i, j]] = value
             for obj, (metric, value) in produces.items():
                 i = object_idx[obj]
                 expected_metric = objects[i].metric
                 if metric != expected_metric:
-                    raise ValueError("Expected metric %r for %r but got %r" % (str(expected_metric), str(obj), str(metric)))
+                    raise ValueError(
+                        "Expected metric %r for %r but got %r"
+                        % (str(expected_metric), str(obj), str(metric))
+                    )
                 recipe_data[model.S[i, j]] = value
         else:
             raise ValueError("No recipe for %s" % p)

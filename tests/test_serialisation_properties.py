@@ -4,15 +4,13 @@ These tests verify that arbitrary models can be saved and loaded, producing
 equivalent outputs. This provides much broader coverage than example-based tests.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
-from hypothesis import given, strategies as st, assume, settings, example
-from hypothesis import HealthCheck
+from hypothesis import given, strategies as st, example
 import sympy as sy
 
-from flowprog import Model, ModelBuilder, Process, Object
-from .model_strategies import MASS, MObject, has_cycle_through_market, model_builder_strategy
+from flowprog import SympyModel, ModelBuilder, Process
+from .model_strategies import MObject, model_builder_strategy
 
 
 # ============================================================================
@@ -144,7 +142,7 @@ def example_model_with_limits():
 @example(example_model_with_allocation())
 @example(example_model_with_limits())
 def model_with_state_strategy(draw):
-    """Generate a built Model"""
+    """Generate a built SympyModel"""
     builder, recipe_data = draw(model_builder_with_recipe_strategy())
     return builder.build(recipe_data)
 
@@ -203,7 +201,7 @@ def test_roundtrip_preserves_structure(model):
 
         # Save and load
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
         # Verify structure
         assert len(loaded.processes) == len(model.processes)
@@ -230,7 +228,7 @@ def test_roundtrip_preserves_all_values(model):
 
         # Save and load
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
         # Check that all non-zero values are preserved
         for key, value in model._values.items():
@@ -264,7 +262,7 @@ def test_roundtrip_with_pull_production(model_and_symbol):
 
         # Save and load
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
     # Verify we can evaluate expressions in both
     for i in range(len(model.processes)):
@@ -316,7 +314,7 @@ def test_roundtrip_preserves_intermediates(model):
 
         # Save and load
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
         # Verify same number of intermediates
         assert len(loaded._intermediates) == initial_intermediates
@@ -354,27 +352,3 @@ def test_metadata_preservation(model, metadata):
         for key, value in metadata.items():
             assert data["metadata"][key] == value
 
-# ============================================================================
-# Regression Tests for Specific Model Patterns
-# ============================================================================
-
-
-if __name__ == "__main__":
-    # Run a quick test to verify the strategies work
-    print("Testing model generation strategies...")
-
-    from hypothesis import find
-
-    print("  Generating model_strategy...")
-    model1 = find(model_strategy(max_processes=5, max_objects=5, randomize_has_stock=True), lambda m: len(m.processes) >= 2)
-    print(f"    Generated model with {len(model1.processes)} processes")
-
-    print("  Generating builder_with_recipe_strategy...")
-    model2, recipe2 = find(builder_with_recipe_strategy(), lambda x: len(x[0].processes) >= 2)
-    print(f"    Generated model with {len(model2.processes)} processes and {len(recipe2)} recipe entries")
-
-    print("  Generating simple_linear_model_strategy...")
-    model3, recipe3 = find(simple_linear_model_strategy(), lambda x: len(x[0].processes) >= 3)
-    print(f"    Generated model with {len(model3.processes)} processes")
-
-    print("\nAll strategies working! Run with pytest for full test suite.")

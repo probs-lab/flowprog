@@ -1,5 +1,5 @@
 """
-Test compatibility between old Model API and new ModelBuilder/Model API.
+Test compatibility between old SympyModel API and new ModelBuilder/Model API.
 
 These tests run the same operations on both implementations and verify that
 they produce identical results, ensuring backward compatibility.
@@ -8,14 +8,13 @@ they produce identical results, ensuring backward compatibility.
 import pytest
 import sympy as sy
 from rdflib import URIRef
-import pandas as pd
 
 # Import old API (delegation layer)
 from flowprog.imperative_model import Model as OldModel
 from flowprog.imperative_model import Process, Object
 
 # Import new API (direct)
-from flowprog.model import ModelBuilder, Model as NewModel
+from flowprog import ModelBuilder
 
 
 MASS = URIRef("http://qudt.org/vocab/quantitykind/Mass")

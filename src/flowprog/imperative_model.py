@@ -6,29 +6,17 @@ but delegates all operations to the new ModelBuilder/Model architecture
 in model.py.
 """
 
-import hashlib
 from typing import Iterable, Optional, Container
-from collections import defaultdict
-from dataclasses import dataclass
-from rdflib import URIRef
 import sympy as sy
-from sympy import S
-import numpy as np
-import pandas as pd
 import logging
 
 # Import new implementation
-from .model import (
-    ModelBuilder as _ModelBuilder,
-    Model as _Model,
-    ModelStructure as _ModelStructure,
-)
-
-_log = logging.getLogger(__name__)
-
+from .model import ModelBuilder as _ModelBuilder
 
 # Re-export Process and Object from model for consistency
-from .model import Process, Object
+from .model_structure import Process, Object
+
+_log = logging.getLogger(__name__)
 
 
 class Model:

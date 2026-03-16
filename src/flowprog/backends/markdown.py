@@ -6,7 +6,7 @@ Also serves as a minimal reference implementation for new compilers.
 
 import sympy as sy
 
-from ..activities import AdditionalActivity, Limit
+from ..activities import Limit
 
 
 def compile_markdown(structure, steps):
@@ -46,7 +46,9 @@ def _format_structure(structure):
         consumes = ", ".join(p.consumes) if p.consumes else "(none)"
         produces = ", ".join(p.produces) if p.produces else "(none)"
         stock = " (has stock)" if p.has_stock else ""
-        lines.append(f"- **{p.id}** (index {j}): consumes [{consumes}] → produces [{produces}]{stock}")
+        lines.append(
+            f"- **{p.id}** (index {j}): consumes [{consumes}] → produces [{produces}]{stock}"
+        )
     lines.append("")
 
     lines.append(f"**Objects** ({len(structure.objects)}):")
@@ -127,8 +129,12 @@ def _describe_transformation(t, structure):
 def _collect_free_symbols(step, structure):
     """Collect user-defined free symbols (excluding model indexed bases)."""
     model_bases = {
-        structure.X, structure.Y, structure.S, structure.U,
-        structure.Balance, structure.ProductionDeficit,
+        structure.X,
+        structure.Y,
+        structure.S,
+        structure.U,
+        structure.Balance,
+        structure.ProductionDeficit,
         structure.ConsumptionDeficit,
     }
     # Symbol names corresponding to model IndexedBase objects
@@ -153,7 +159,8 @@ def _collect_free_symbols(step, structure):
     # Filter: keep only plain Symbols whose name isn't a model IndexedBase
     # and that aren't intermediate symbols (x0, x1, ...)
     params = {
-        s for s in params
+        s
+        for s in params
         if isinstance(s, sy.Symbol)
         and s.name not in model_base_names
         and s not in intermediate_syms

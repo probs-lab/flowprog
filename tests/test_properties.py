@@ -1,11 +1,10 @@
 import pytest
-import numpy as np
 from hypothesis import strategies as st, given, assume, example, settings
 import sympy as sy
 from sympy.abc import a, b, c
-from flowprog.model import ModelBuilder, Model, Process, Object
+from flowprog import ModelBuilder, Process
 
-from .model_strategies import MASS, MObject, has_cycle_through_market, model_builder_strategy
+from .model_strategies import MObject, model_builder_strategy
 
 
 @given(st.floats(min_value=0, max_value=1e20, allow_infinity=False),
@@ -58,6 +57,8 @@ def test_limit_with_symbols(initial, consumption, limit_value):
         "b": consumption,
         "c": limit_value,
     })
+
+    assert value == pytest.approx(result["e4fd6a2696334d819abc161c8efbb5f0"])
 
 
 # TODO: check that there is a test that fails if you swap `v` to `proposed` in
@@ -115,7 +116,7 @@ class TestSimpleModel:
     def test_various_model_methods_with_zero_demand(self, demand, method_name):
         """Test various model methods with potentially zero demand values."""
         builder = self._create_simple_model_builder()
-        sy.var("d", real=True)
+        d = sy.symbols("d", real=True)
 
         # Call different model methods
         if method_name == "pull_production":

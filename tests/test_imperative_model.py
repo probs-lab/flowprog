@@ -434,7 +434,7 @@ class TestSymbolicRecipeValues:
 #     ]
 #     objects = [Object("in"), Object("mid"), Object("out")]
 
-#     m = Model(processes, objects)
+#     m = SympyModel(processes, objects)
 #     independent_vars = list(m.S.values()) + list(m.U.values()) + [m.Z[2]]
 #     sol, actual_vars = solve(m, independent_vars)
 

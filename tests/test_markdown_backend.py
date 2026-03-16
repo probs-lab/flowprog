@@ -1,27 +1,12 @@
 """Tests for the compilers subpackage."""
 
-import pytest
 import sympy as sy
 from sympy.abc import a, b
 
-from flowprog.model import ModelBuilder, Process, Object
-from flowprog.compilers.markdown import compile_markdown
-from flowprog.compilers.sympy import compile_sympy
-from flowprog.activities import AdditionalActivity, Limit
+from flowprog.model import ModelBuilder, Process
+from flowprog.backends.markdown import compile_markdown
 
 from .model_strategies import MObject
-
-
-class TestSympyCompiler:
-    """Basic tests - should be merged with main ones."""
-
-    def test_basic_compilation(self):
-        processes = [Process("M1", produces=["out"], consumes=["in"])]
-        objects = [MObject("in"), MObject("out")]
-        builder = ModelBuilder(processes, objects)
-        builder.add({builder.X[0]: 3.5}, label="test")
-        m = builder.build()
-        assert m.eval(builder.X[0]) == 3.5
 
 
 class TestMarkdownCompiler:
@@ -91,14 +76,14 @@ class TestMarkdownCompiler:
         assert "`b`" in md
 
     def test_no_model_symbols_in_parameters(self):
-        """Model indexed bases (S, U, X, Y) should not appear as parameters."""
+        """SympyModel indexed bases (S, U, X, Y) should not appear as parameters."""
         processes = [Process("M1", produces=["out"], consumes=["in"])]
         objects = [MObject("in"), MObject("out")]
         m = ModelBuilder(processes, objects)
 
         m.add(m.pull_production("out", a), label="test")
         md = m.describe()
-        params_line = [l for l in md.split("\n") if "**Parameters:**" in l][0]
+        params_line = [line for line in md.split("\n") if "**Parameters:**" in line][0]
         assert "`a`" in params_line
         # S, U etc. should not be listed
         for name in ["S", "U", "X", "Y"]:

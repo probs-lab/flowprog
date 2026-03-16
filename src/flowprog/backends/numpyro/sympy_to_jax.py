@@ -1,5 +1,4 @@
-"""NumPyro compiler helper: convert sympy to JAX expressions
-"""
+"""NumPyro compiler helper: convert sympy to JAX expressions"""
 
 import jax.numpy as jnp
 import sympy as sy

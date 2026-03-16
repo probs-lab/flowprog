@@ -5,7 +5,7 @@ callable with numpyro.sample() and numpyro.deterministic() calls instead
 of accumulated SymPy expressions.
 """
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 import jax.numpy as jnp
 import numpyro
@@ -68,7 +68,7 @@ class NumpyroState:
             self.accumulated[k] = self.accumulated.get(k, 0.0) + v
 
 
-class CompiledModel:
+class NumpyroModel:
     @classmethod
     def from_steps(
         cls,
@@ -216,7 +216,7 @@ class CompiledModel:
                 #     sigma_val = params[sigma_symbol]
                 if sigma_name in params:
                     sigma_val = params[sigma_name]
-                # TODO could define sigma_priors on CompiledModel and do this still
+                # TODO could define sigma_priors on NumpyroModel and do this still
                 # elif (prior_dist := spec._lookup(sigma_name)) is not None:
                 #     sigma_val = numpyro.sample(sigma_name, prior_dist)
                 #     env[sigma_symbol] = sigma_val

@@ -3,7 +3,7 @@
 from hypothesis import strategies as st
 from hypothesis import assume
 from rdflib import URIRef
-from flowprog import ModelBuilder, Model, Process, Object
+from flowprog import ModelBuilder, Process, Object
 
 
 # Shorthand for creating objects

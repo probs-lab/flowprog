@@ -6,6 +6,7 @@ sympy compiler with smooth JAX-compatible alternatives.
 
 import jax.numpy as jnp
 
+
 def smooth_max(a, b, beta=100.0):
     """Smooth approximation to max(a, b) using log-sum-exp.
 

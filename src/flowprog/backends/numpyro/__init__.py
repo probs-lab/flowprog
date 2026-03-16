@@ -1,3 +1,3 @@
-from .numpyro_compiler import CompiledModel, Observation
+from .numpyro_compiler import NumpyroModel, Observation
 
-__all__ = ["CompiledModel", "Observation"]
+__all__ = ["NumpyroModel", "Observation"]

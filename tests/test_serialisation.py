@@ -1,14 +1,11 @@
 """Tests for model serialisation (save/load functionality)."""
 
 import pytest
-import tempfile
-import os
 import json
-from pathlib import Path
 from rdflib import URIRef
 
 # Import new implementation directly
-from flowprog.model import ModelBuilder, Model, Process, Object
+from flowprog import ModelBuilder, SympyModel, Process, Object
 import sympy as sy
 
 
@@ -402,8 +399,8 @@ class TestSaveLoadSteps:
         assert len(data["steps"]) == 1
 
 
-class TestEvaluableModelSaveLoad:
-    """Test save/load for evaluable Model (with recipe data)."""
+class TestSympyModelSaveLoad:
+    """Test save/load for evaluable SympyModel (with recipe data)."""
 
     @pytest.fixture
     def model_with_recipe(self):
@@ -439,7 +436,7 @@ class TestEvaluableModelSaveLoad:
         return builder.build(recipe), demand
 
     def test_save_creates_file(self, model_with_recipe, tmp_path):
-        """Test that Model.save creates a file."""
+        """Test that SympyModel.save creates a file."""
         model, _ = model_with_recipe
         filepath = tmp_path / "test_model.json"
         model.save(str(filepath))
@@ -456,7 +453,7 @@ class TestEvaluableModelSaveLoad:
 
         assert "recipe" in data
         assert "type" in data
-        assert data["type"] == "evaluable_model"
+        assert data["type"] == "SympyModel"
         assert "SteamCracking" in data["recipe"]
         assert "Polymerization" in data["recipe"]
 
@@ -466,7 +463,7 @@ class TestEvaluableModelSaveLoad:
         filepath = tmp_path / "test_model.json"
 
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
         # Verify recipe was restored
         recipe_sc = loaded.get_recipe("SteamCracking")
@@ -487,7 +484,7 @@ class TestEvaluableModelSaveLoad:
 
         # Save and load
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
         # Get loaded flows
         flows_loaded = loaded.to_flows({demand: 1000})
@@ -514,7 +511,7 @@ class TestEvaluableModelSaveLoad:
 
         # Save and load
         model.save(str(filepath))
-        loaded = Model.load(str(filepath))
+        loaded = SympyModel.load(str(filepath))
 
         # Get loaded lambdified function
         func_loaded = loaded.lambdify()

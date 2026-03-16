@@ -24,8 +24,8 @@ import numpyro.distributions as dist
 import numpyro.infer
 import sympy as sy
 
-from flowprog.model import ModelBuilder, Process, Object
-from flowprog.backends.numpyro import CompiledModel, Observation
+from flowprog.model import ModelBuilder, Process
+from flowprog.backends.numpyro import NumpyroModel, Observation
 from flowprog.backends.numpyro.transform_handlers import SurplusLimitHandler
 
 from .model_strategies import MObject
@@ -121,7 +121,7 @@ def _eval_numpyro_model(builder, f_val, g_val, beta=1000.0, surplus=False):
 
     Passes f and g as keyword arguments to the model function.
     """
-    compiled_model = CompiledModel.from_steps(
+    compiled_model = NumpyroModel.from_steps(
         builder._steps,
         builder.structure,
         recipe_data=RECIPE_DATA,
@@ -161,7 +161,7 @@ class TestNumpyroCompilerBasic:
         builder.add({builder.X[0]: f}, label="test")
 
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             recipe_data=recipe,
@@ -189,7 +189,7 @@ class TestNumpyroCompilerBasic:
 
         param_priors = {"f": dist.Normal(3.5, 0.1)}
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors=param_priors,
@@ -214,7 +214,7 @@ class TestNumpyroCompilerBasic:
 
         param_priors = {f: dist.Normal(3.5, 0.1)}
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors=param_priors,
@@ -436,7 +436,7 @@ class TestObservations:
         )
 
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             recipe_data=recipe,
@@ -453,7 +453,7 @@ class TestObservations:
     def test_conflicting_observations_posterior_between(self):
         """Two conflicting observations pull the posterior between their values.
 
-        Model: Y[0] = f, observed as S[1,0]*Y[0] with two data points.
+        SympyModel: Y[0] = f, observed as S[1,0]*Y[0] with two data points.
         obs_low says the value is 3.0 (sigma=0.1).
         obs_high says the value is 7.0 (sigma=0.1).
         The posterior mean of f should be approximately centred at 5.0.
@@ -481,7 +481,7 @@ class TestObservations:
 
         param_priors = {"f": dist.Normal(5.0, 10.0)}
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors=param_priors,
@@ -523,10 +523,8 @@ class TestNumpyroCompilerSuplusParameterisation:
         step = builder.limit(proposed, builder.Y[0], C)
         builder.add(step)
 
-        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {}}}
-
         # Without surplus parameterisation, both params have priors to sample
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors={f: dist.Normal(8, 1), C: dist.Normal(12, 1)},
@@ -543,7 +541,7 @@ class TestNumpyroCompilerSuplusParameterisation:
 
         # With surplus parameterisation
 
-        compiled_model2 = CompiledModel.from_steps(
+        compiled_model2 = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors={f: dist.Normal(8, 1), C: dist.Normal(12, 1)},
@@ -569,7 +567,7 @@ class TestNumpyroCompilerSuplusParameterisation:
 
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {}}}
 
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors={f: dist.Normal(8, 1), C: dist.Normal(12, 1)},
@@ -597,7 +595,7 @@ class TestNumpyroCompilerSuplusParameterisation:
 
         recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {}}}
 
-        compiled_model = CompiledModel.from_steps(
+        compiled_model = NumpyroModel.from_steps(
             builder._steps,
             builder.structure,
             param_priors={f: dist.Normal(8, 1), C: dist.Normal(12, 1)},

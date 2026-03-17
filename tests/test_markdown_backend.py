@@ -3,7 +3,7 @@
 import sympy as sy
 from sympy.abc import a, b
 
-from flowprog.model import ModelBuilder, Process
+from flowprog.model_builder import ModelBuilder, Process
 from flowprog.backends.markdown import compile_markdown
 
 from .model_strategies import MObject

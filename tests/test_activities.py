@@ -4,7 +4,7 @@ import pytest
 import sympy as sy
 from rdflib import URIRef
 
-from flowprog.model import ModelBuilder, Process, Object
+from flowprog.model_builder import ModelBuilder, Process, Object
 from flowprog.activities import AdditionalActivity, Limit
 
 

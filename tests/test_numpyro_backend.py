@@ -1,21 +1,7 @@
 """Tests for the NumPyro compiler.
-
-Tests the three-step recycling model from Section 2.3.2 of the paper:
-- 5 objects (O1–O5), 3 processes (P1–P3)
-- P1 consumes O2 and O3, produces O1
-- P2 consumes O4, produces O2
-- P3 consumes O5, produces O2
-
-Step 1: Pull production of O1 = f, stopping at O2
-Step 2: Push consumption of O4 = g, stopping at O2
-Step 3: Pull production deficit of O2 from P3
-
-Expected (sharp):
-  P1 activity: f / S₁₁
-  P2 activity: g / U₄₂
-  P3 activity: max(0, f·U₂₁/S₁₁ − g·S₂₂/U₄₂) / S₂₃
 """
 
+import pytest
 import jax
 import jax.numpy as jnp
 import numpyro
@@ -24,11 +10,263 @@ import numpyro.distributions as dist
 import numpyro.infer
 import sympy as sy
 
-from flowprog.model import ModelBuilder, Process
+from flowprog.model_builder import ModelBuilder, Process
 from flowprog.backends.numpyro import NumpyroModel, Observation
 from flowprog.backends.numpyro.transform_handlers import SurplusLimitHandler
 
 from .model_strategies import MObject
+
+
+def _eval_sympy_model(builder, f_val, g_val):
+    """Evaluate the sympy-compiled model for given f and g values.
+
+    Returns dict of {symbol_str: float_value} for X[0], X[1], X[2], Y[0], Y[1], Y[2].
+    """
+    model = builder.build(RECIPE_DATA)
+    f = sy.Symbol("f", positive=True)
+    g = sy.Symbol("g", positive=True)
+    params = {f: f_val, g: g_val}
+
+    results = {}
+    S = builder.structure
+    for j in range(3):
+        x_val = model.eval(S.X[j], params)
+        y_val = model.eval(S.Y[j], params)
+        results[f"X_{j}"] = float(x_val)
+        results[f"Y_{j}"] = float(y_val)
+    return results
+
+
+def _eval_numpyro_model(builder, recipe_data, params, beta=1000.0, surplus=False):
+    """Evaluate the numpyro-compiled model for given params."""
+    compiled_model = NumpyroModel.from_steps(
+        builder._steps,
+        builder.structure,
+        recipe_data=recipe_data,
+        beta=beta,
+        surplus_parameterisation=surplus,
+    )
+
+    def fn():
+        state = compiled_model(params)
+        numpyro.deterministic("X", state.X)
+        numpyro.deterministic("Y", state.Y)
+
+    # Run the model with fixed parameter values (passed as kwargs)
+    with handlers.seed(rng_seed=0):
+        trace = handlers.trace(fn).get_trace()
+
+    results = {
+        f"{k}_{i}": float(trace[k]["value"][i])
+        for k in ("X", "Y")
+        for i in range(len(builder.structure.processes))
+    }
+    return results
+
+
+# ── Tests ────────────────────────────────────────────────────────────
+
+
+class TestNumpyroCompilerBasic:
+    """Basic compilation tests for the NumPyro compiler."""
+
+    def test_simple_model(self):
+        """A simple one-step model compiles and evaluates correctly."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        builder = ModelBuilder(processes, objects)
+
+        f = sy.Symbol("f", positive=True)
+        builder.add({builder.X[0]: f, builder.Y[0]: f}, label="test")
+
+        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
+        results = _eval_numpyro_model(builder, recipe, dict(f=3.5))
+        assert results["Y_0"] == pytest.approx(3.5)
+
+
+class TestNumpyroBroadcasting:
+    """Check behaviour with different dimensions of priors, observations."""
+
+    @pytest.fixture
+    def simple_builder(self):
+        processes = [
+            Process("P1", produces=["out"], consumes=["mid"]),
+            Process("P2", produces=["mid"], consumes=["in"]),
+        ]
+        objects = [MObject("in"), MObject("mid"), MObject("out")]
+        builder = ModelBuilder(processes, objects)
+        f = sy.Symbol("f", positive=True)
+        builder.add(builder.pull_production("out", f), label="test")
+        return builder
+
+    @pytest.fixture
+    def compile_simple_model(self, simple_builder):
+        recipe = {
+            "P1": {"produces": {"out": 1.0}, "consumes": {"mid": 1.0}},
+            "P2": {"produces": {"mid": 1.0}, "consumes": {"in": 1.0}},
+        }
+
+        def compile_model(**kwargs):
+            return NumpyroModel.from_steps(
+                simple_builder._steps,
+                simple_builder.structure,
+                recipe_data=recipe,
+                **kwargs,
+            )
+
+        return compile_model
+
+    @pytest.fixture
+    def compile_limited_model(self):
+        processes = [
+            Process("P1", produces=["out"], consumes=["mid"]),
+            Process("P2", produces=["mid"], consumes=["in"]),
+        ]
+        objects = [MObject("in"), MObject("mid"), MObject("out")]
+        builder = ModelBuilder(processes, objects)
+        f = sy.Symbol("f", positive=True)
+        C = sy.Symbol("C", positive=True)
+
+        step = builder.pull_production("out", f)
+        limit_expr = builder.expr("SoldProduction", object_id="out")
+        builder.add(builder.limit(step, limit_expr, C))
+
+        recipe = {
+            "P1": {"produces": {"out": 1.0}, "consumes": {"mid": 1.0}},
+            "P2": {"produces": {"mid": 1.0}, "consumes": {"in": 1.0}},
+        }
+
+        def compile_model(**kwargs):
+            return NumpyroModel.from_steps(
+                builder._steps,
+                builder.structure,
+                recipe_data=recipe,
+                **kwargs,
+            )
+
+        return compile_model
+
+    def test_scalar(self, compile_simple_model):
+        model = compile_simple_model()
+        traced = jax.eval_shape(lambda: model({"f": 3}).X)
+        assert traced.shape == (2,)  # 2 processes
+
+    def test_vector_params(self, compile_simple_model):
+        model = compile_simple_model()
+        traced = jax.eval_shape(lambda: model({"f": jnp.array([1, 2, 3, 4, 5])}).X)
+        assert traced.shape == (5, 2)  # 5 batch dimension, 2 processes
+
+    def test_vector_obs(self, simple_builder, compile_simple_model):
+        """The vector obs values don't change the model batch_dims"""
+        obs = [
+            Observation(
+                "P1_output",
+                simple_builder.expr("ProcessOutput", process_id="P1", object_id="out"),
+                sigma=1,
+            ),
+        ]
+        obs_data = {"P1_output": jnp.array([1, 2, 3, 4, 5, 6])}
+
+        model = compile_simple_model(observations=obs)
+
+        def fn(obs=None):
+            state = model({"f": 3})
+            numpyro.deterministic("X", state.X)
+            with numpyro.plate("obs", 6):
+                model.likelihood(state, obs_data)
+
+        with handlers.seed(rng_seed=0):
+            trace = handlers.trace(fn).get_trace(obs=obs_data)
+
+        X = trace["X"]["value"]
+        assert X.shape == (2,)  # 2 processes
+
+    def test_surplus_param_without_plate(self, compile_limited_model):
+        """C parameter by default is sampled once"""
+        model = compile_limited_model(
+            param_priors={"C": dist.Normal(3, 1)},
+            surplus_parameterisation=True,
+        )
+
+        def fn(obs=None):
+            state = model({"f": jnp.array([1, 2, 3, 4, 5])})
+            numpyro.deterministic("X", state.X)
+
+        with handlers.seed(rng_seed=0):
+            trace = handlers.trace(fn).get_trace()
+
+        X = trace["X"]["value"]
+        assert X.shape == (5, 2)  # 5 batch size, 2 processes
+        assert trace["C"]["value"].shape == ()
+
+    def test_surplus_param_with_plate(self, compile_limited_model):
+        """C parameter is sampled multiple times in plate"""
+        model = compile_limited_model(
+            param_priors={"C": dist.Normal(3, 1)},
+            surplus_parameterisation=True,
+        )
+
+        def fn(obs=None):
+            with numpyro.plate("plate", 5):
+                state = model({"f": jnp.array([1, 2, 3, 4, 5])})
+                numpyro.deterministic("X", state.X)
+
+        with handlers.seed(rng_seed=0):
+            trace = handlers.trace(fn).get_trace()
+
+        assert trace["X"]["value"].shape == (5, 2)  # 5 batch size, 2 processes
+        assert trace["C"]["value"].shape == (5,)  # 5 batch size
+
+
+class TestNumpyroConvenienceWrapper:
+    def test_compiles_with_param_priors(self):
+        """Parameters with priors specified are sampled."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        builder = ModelBuilder(processes, objects)
+
+        f = sy.Symbol("f", positive=True)
+        builder.add({builder.X[0]: f}, label="test")
+
+        param_priors = {"f": dist.Normal(3.5, 0.1)}
+        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
+        compiled_model = NumpyroModel.from_steps(
+            builder._steps,
+            builder.structure,
+            param_priors=param_priors,
+            recipe_data=recipe,
+        )
+
+        # Should run without error (f is sampled, not provided)
+        with handlers.seed(rng_seed=42):
+            trace = handlers.trace(compiled_model.numpyro_model).get_trace()
+
+        assert "f" in trace
+        assert trace["f"]["type"] == "sample"
+
+    def test_spec_priors_accept_symbol_keys(self):
+        """param_priors accepts sympy Symbol keys in addition to strings."""
+        processes = [Process("M1", produces=["out"], consumes=["in"])]
+        objects = [MObject("in"), MObject("out")]
+        builder = ModelBuilder(processes, objects)
+
+        f = sy.Symbol("f", positive=True)
+        builder.add({builder.X[0]: f}, label="test")
+
+        param_priors = {f: dist.Normal(3.5, 0.1)}
+        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
+        compiled_model = NumpyroModel.from_steps(
+            builder._steps,
+            builder.structure,
+            param_priors=param_priors,
+            recipe_data=recipe,
+        )
+
+        with handlers.seed(rng_seed=42):
+            trace = handlers.trace(compiled_model.numpyro_model).get_trace()
+
+        assert "f" in trace
+        assert trace["f"]["type"] == "sample"
 
 
 # ── Three-step recycling model fixtures ──────────────────────────────
@@ -96,141 +334,29 @@ def _build_recycling_model(f_val, g_val):
     return builder, f, g
 
 
-def _eval_sympy_model(builder, f_val, g_val):
-    """Evaluate the sympy-compiled model for given f and g values.
-
-    Returns dict of {symbol_str: float_value} for X[0], X[1], X[2], Y[0], Y[1], Y[2].
-    """
-    model = builder.build(RECIPE_DATA)
-    f = sy.Symbol("f", positive=True)
-    g = sy.Symbol("g", positive=True)
-    params = {f: f_val, g: g_val}
-
-    results = {}
-    S = builder.structure
-    for j in range(3):
-        x_val = model.eval(S.X[j], params)
-        y_val = model.eval(S.Y[j], params)
-        results[f"X_{j}"] = float(x_val)
-        results[f"Y_{j}"] = float(y_val)
-    return results
-
-
-def _eval_numpyro_model(builder, f_val, g_val, beta=1000.0, surplus=False):
-    """Evaluate the numpyro-compiled model for given f and g.
-
-    Passes f and g as keyword arguments to the model function.
-    """
-    compiled_model = NumpyroModel.from_steps(
-        builder._steps,
-        builder.structure,
-        recipe_data=RECIPE_DATA,
-        beta=beta,
-        surplus_parameterisation=surplus,
-    )
-
-    def fn():
-        results = compiled_model(params=dict(f=f_val, g=g_val))
-        compiled_model.store_process_activities(results)
-
-    # Run the model with fixed parameter values (passed as kwargs)
-    with handlers.seed(rng_seed=0):
-        trace = handlers.trace(fn).get_trace()
-
-    results = {
-        k: float(trace[k]["value"])
-        for k in trace
-        if k.startswith("X_") or k.startswith("Y_")
-    }
-    return results
-
-
-# ── Tests ────────────────────────────────────────────────────────────
-
-
-class TestNumpyroCompilerBasic:
-    """Basic compilation tests for the NumPyro compiler."""
-
-    def test_simple_model(self):
-        """A simple one-step model compiles and evaluates correctly."""
-        processes = [Process("M1", produces=["out"], consumes=["in"])]
-        objects = [MObject("in"), MObject("out")]
-        builder = ModelBuilder(processes, objects)
-
-        f = sy.Symbol("f", positive=True)
-        builder.add({builder.X[0]: f}, label="test")
-
-        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = NumpyroModel.from_steps(
-            builder._steps,
-            builder.structure,
-            recipe_data=recipe,
-            beta=1000.0,
-        )
-
-        def fn():
-            results = compiled_model(params=dict(f=3.5))
-            compiled_model.store_process_activities(results)
-
-        # Pass f as keyword argument
-        with handlers.seed(rng_seed=0):
-            trace = handlers.trace(fn).get_trace()
-
-        assert abs(float(trace["X_0"]["value"]) - 3.5) < 1e-6
-
-    def test_compiles_with_param_priors(self):
-        """Parameters with priors specified are sampled."""
-        processes = [Process("M1", produces=["out"], consumes=["in"])]
-        objects = [MObject("in"), MObject("out")]
-        builder = ModelBuilder(processes, objects)
-
-        f = sy.Symbol("f", positive=True)
-        builder.add({builder.X[0]: f}, label="test")
-
-        param_priors = {"f": dist.Normal(3.5, 0.1)}
-        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = NumpyroModel.from_steps(
-            builder._steps,
-            builder.structure,
-            param_priors=param_priors,
-            recipe_data=recipe,
-        )
-
-        # Should run without error (f is sampled, not provided)
-        with handlers.seed(rng_seed=42):
-            trace = handlers.trace(compiled_model.numpyro_model).get_trace()
-
-        assert "f" in trace
-        assert trace["f"]["type"] == "sample"
-
-    def test_spec_priors_accept_symbol_keys(self):
-        """param_priors accepts sympy Symbol keys in addition to strings."""
-        processes = [Process("M1", produces=["out"], consumes=["in"])]
-        objects = [MObject("in"), MObject("out")]
-        builder = ModelBuilder(processes, objects)
-
-        f = sy.Symbol("f", positive=True)
-        builder.add({builder.X[0]: f}, label="test")
-
-        param_priors = {f: dist.Normal(3.5, 0.1)}
-        recipe = {"M1": {"produces": {"out": 1.0}, "consumes": {"in": 1.0}}}
-        compiled_model = NumpyroModel.from_steps(
-            builder._steps,
-            builder.structure,
-            param_priors=param_priors,
-            recipe_data=recipe,
-        )
-
-        with handlers.seed(rng_seed=42):
-            trace = handlers.trace(compiled_model.numpyro_model).get_trace()
-
-        assert "f" in trace
-        assert trace["f"]["type"] == "sample"
+def _eval_numpyro_recycling(builder, f_val, g_val, beta=1000, surplus=False):
+    params = dict(f=f_val, g=g_val)
+    return _eval_numpyro_model(builder, RECIPE_DATA, params, beta, surplus)
 
 
 class TestRecyclingModelComparison:
     """Compare NumPyro compiler output against SymPy compiler for the
     three-step recycling model.
+
+    Tests the three-step recycling model from Section 2.3.2 of the paper:
+    - 5 objects (O1–O5), 3 processes (P1–P3)
+    - P1 consumes O2 and O3, produces O1
+    - P2 consumes O4, produces O2
+    - P3 consumes O5, produces O2
+
+    Step 1: Pull production of O1 = f, stopping at O2
+    Step 2: Push consumption of O4 = g, stopping at O2
+    Step 3: Pull production deficit of O2 from P3
+
+    Expected (sharp):
+    P1 activity: f / S₁₁
+    P2 activity: g / U₄₂
+    P3 activity: max(0, f·U₂₁/S₁₁ − g·S₂₂/U₄₂) / S₂₃
 
     For parameter values away from the regime boundary, results should
     agree to numerical precision (modulo smooth approximation error which
@@ -248,7 +374,7 @@ class TestRecyclingModelComparison:
         builder, f, g = _build_recycling_model(5, 1)
 
         sympy_results = _eval_sympy_model(builder, 5, 1)
-        numpyro_results = _eval_numpyro_model(builder, 5, 1, beta=1000.0)
+        numpyro_results = _eval_numpyro_recycling(builder, 5, 1, beta=1000.0)
 
         for key in ["X_0", "Y_0", "X_1", "Y_1", "X_2", "Y_2"]:
             assert (
@@ -271,7 +397,7 @@ class TestRecyclingModelComparison:
         builder, f, g = _build_recycling_model(5, 4)
 
         sympy_results = _eval_sympy_model(builder, 5, 4)
-        numpyro_results = _eval_numpyro_model(builder, 5, 4, beta=1000.0)
+        numpyro_results = _eval_numpyro_recycling(builder, 5, 4, beta=1000.0)
 
         for key in ["X_0", "Y_0", "X_1", "Y_1", "X_2", "Y_2"]:
             assert (
@@ -296,7 +422,7 @@ class TestRecyclingModelComparison:
         builder, f, g = _build_recycling_model(5, 6)
 
         sympy_results = _eval_sympy_model(builder, 5, 6)
-        numpyro_results = _eval_numpyro_model(builder, 5, 6, beta=1000.0)
+        numpyro_results = _eval_numpyro_recycling(builder, 5, 6, beta=1000.0)
 
         for key in ["X_0", "Y_0", "X_1", "Y_1", "X_2", "Y_2"]:
             assert (
@@ -312,9 +438,9 @@ class TestRecyclingModelComparison:
         builder, f, g = _build_recycling_model(5, 4)
 
         # With beta=100, deviation should be O(0.01)
-        results_100 = _eval_numpyro_model(builder, 5, 4, beta=100.0)
+        results_100 = _eval_numpyro_recycling(builder, 5, 4, beta=100.0)
         # With beta=1000, deviation should be O(0.001)
-        results_1000 = _eval_numpyro_model(builder, 5, 4, beta=1000.0)
+        results_1000 = _eval_numpyro_recycling(builder, 5, 4, beta=1000.0)
 
         # The higher-beta result should be closer to the exact answer
         sympy_results = _eval_sympy_model(builder, 5, 4)
@@ -370,7 +496,7 @@ class TestRecyclingModelWithLimit:
         builder, f, g = self._build_limited_model()
 
         sympy_results = _eval_sympy_model(builder, 5, 6)
-        numpyro_results = _eval_numpyro_model(builder, 5, 6, beta=1000.0)
+        numpyro_results = _eval_numpyro_recycling(builder, 5, 6, beta=1000.0)
 
         # P1 activity should be f / S₁₁ = 5
         assert abs(numpyro_results["Y_0"] - 5.0) < 0.1
@@ -388,7 +514,7 @@ class TestRecyclingModelWithLimit:
         builder, f, g = self._build_limited_model()
 
         sympy_results = _eval_sympy_model(builder, 5, 1)
-        numpyro_results = _eval_numpyro_model(builder, 5, 1, beta=1000.0)
+        numpyro_results = _eval_numpyro_recycling(builder, 5, 1, beta=1000.0)
 
         for key in ["X_0", "Y_0", "X_1", "Y_1", "X_2", "Y_2"]:
             assert (
@@ -403,10 +529,10 @@ class TestRecyclingModelWithLimit:
         """
         builder, f, g = self._build_limited_model()
 
-        numpyro_natural_results = _eval_numpyro_model(
+        numpyro_natural_results = _eval_numpyro_recycling(
             builder, 5, 6, beta=1000.0, surplus=False
         )
-        numpyro_surplus_results = _eval_numpyro_model(
+        numpyro_surplus_results = _eval_numpyro_recycling(
             builder, 5, 6, beta=1000.0, surplus=True
         )
 
@@ -443,10 +569,12 @@ class TestObservations:
             observations=[obs],
         )
 
+        def fn():
+            state = compiled_model({"f": 1})
+            compiled_model.likelihood(state, obs={"total_out": jnp.array([5.0])})
+
         with handlers.seed(rng_seed=0):
-            trace = handlers.trace(compiled_model.likelihood).get_trace(
-                obs={"total_out": jnp.array([5.0])}, result={}
-            )
+            trace = handlers.trace(fn).get_trace()
 
         assert "obs_total_out" in trace
 

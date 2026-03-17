@@ -38,6 +38,10 @@ class ModelBuilder:
     When building is complete, call .build(recipe_data) to create an evaluable Model.
     """
 
+    @classmethod
+    def from_structure(cls, structure) -> "ModelBuilder":
+        return cls(structure.processes, structure.objects)
+
     def __init__(self, processes: list[Process], objects: list[Object]):
         """Initialize model builder.
 

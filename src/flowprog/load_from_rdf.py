@@ -2,7 +2,8 @@
 
 from itertools import groupby
 from rdflib import Namespace
-from .imperative_model import Process, Object, Model
+from .model_structure import Process, Object, ModelStructure
+from .model_builder import ModelBuilder
 
 import logging
 
@@ -174,9 +175,9 @@ def query_endpoint(rdfox, model_uri, **kwargs) -> tuple[list, list]:
     return object_types, recipe_builders
 
 
-def build_model(
-    object_types: list, recipe_builders: list, **kwargs
-) -> tuple[Model, dict]:
+def build_model_structure(
+    object_types: list, recipe_builders: list
+) -> tuple[ModelStructure, dict]:
     processes = [
         Process(
             id=strip_uri(k),
@@ -204,7 +205,7 @@ def build_model(
         for x in object_types
     ]
 
-    model = Model(processes, objects, **kwargs)
+    model = ModelStructure(processes, objects)
 
     recipe_data = {}
     process_idx = {p.id: j for j, p in enumerate(model.processes)}
@@ -237,8 +238,8 @@ def build_model(
     return model, recipe_data
 
 
-def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[Model, dict]:
+def query_model_from_endpoint(rdfox, model_uri, **kwargs) -> tuple[ModelStructure, dict]:
     """Query to find object types, recipe builders and observations."""
 
     object_types, recipe_builders = query_endpoint(rdfox, model_uri)
-    return build_model(object_types, recipe_builders, **kwargs)
+    return build_model_structure(object_types, recipe_builders, **kwargs)

@@ -11,7 +11,7 @@ import sympy as sy
 import logging
 
 # Import new implementation
-from .model import ModelBuilder as _ModelBuilder
+from .model_builder import ModelBuilder as _ModelBuilder
 
 # Re-export Process and Object from model for consistency
 from .model_structure import Process, Object

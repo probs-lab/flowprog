@@ -8,7 +8,7 @@
 
 @prefix model: <http://probs-lab.github.io/flowprog/examples/energy-model/> .
 @prefix sys: <http://probs-lab.github.io/flowprog/examples/system/> .
-@prefix probs: <https://ukfires.org/probs/ontology/> .
+@prefix probs: <http://w3id.org/probs-lab/ontology#> .
 @prefix quantitykind: <http://qudt.org/vocab/quantitykind/> .
 
 model:Model probs:hasProcess

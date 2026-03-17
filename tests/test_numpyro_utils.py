@@ -4,7 +4,7 @@
 import jax.numpy as jnp
 import sympy as sy
 
-from flowprog.model import ModelBuilder, Process, Object, ModelStructure
+from flowprog.model_builder import ModelBuilder, Process, Object, ModelStructure
 from flowprog.backends.numpyro.numpyro_compiler import (
     _normalize_recipe,
     _collect_free_parameters,

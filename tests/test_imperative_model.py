@@ -2,7 +2,7 @@ import pytest
 from rdflib import URIRef
 
 # Import new implementation directly
-from flowprog.model import ModelBuilder, Process, Object
+from flowprog.model_builder import ModelBuilder, Process, Object
 from flowprog.activities import eval_activity_expr
 import sympy as sy
 

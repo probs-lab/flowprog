@@ -6,8 +6,8 @@ from pathlib import Path
 
 def task_extract_rdf():
     return {
-        "targets": ["system-definitions/_build/probs_rdf/output.ttl"],
-        "file_dep": list(Path("system-definitions").glob("*.md")),
+        "targets": ["docs/_build/probs_rdf/output.ttl"],
+        "file_dep": list(Path("docs").glob("*.md")),
         "actions": [
             # Clean is needed for now at least, since Sphinx extension is not
             # properly responding to things being removed and caches them too
@@ -16,10 +16,10 @@ def task_extract_rdf():
             # Also when using jupyter-cache to avoid rerunning every notebook
             # every time, the cache needs to be cleared when the rdf output
             # changes (the --all option does this).
-            "jupyter-book clean --all system-definitions",
+            "jupyter-book clean --all docs",
             (
-                "jupyter-book build system-definitions -v --builder=custom --custom-builder=probs_rdf "
-                "--config system-definitions/_config_extract_rdf.yml"
+                "jupyter-book build docs -v --builder=custom --custom-builder=probs_rdf "
+                # "--config docs/_config_extract_rdf.yml"
             ),
         ],
     }

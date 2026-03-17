@@ -333,9 +333,6 @@ class SympyModel:
         if values is None:
             values = {}
 
-        # Merge recipe with provided values
-        all_values = {**self.get_recipe_as_symbols(), **values}
-
         rows = []
         M = len(self.processes)
 
@@ -346,7 +343,7 @@ class SympyModel:
             ):
                 expr = self._values[self.Y[j]] * self.S[i, j]
                 # Resolve intermediates first, then substitute values
-                resolved = self.eval_intermediates(expr, all_values)
+                resolved = self.eval(expr, values)
                 rows.append(
                     (
                         self.processes[j].id,
@@ -364,7 +361,7 @@ class SympyModel:
             ):
                 expr = self._values[self.X[j]] * self.U[i, j]
                 # Resolve intermediates first, then substitute values
-                resolved = self.eval_intermediates(expr, all_values)
+                resolved = self.eval(expr, values)
                 rows.append(
                     (
                         self.objects[i].id,

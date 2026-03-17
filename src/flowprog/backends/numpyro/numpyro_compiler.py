@@ -40,10 +40,43 @@ class NumpyroState:
         self.structure = structure
         self.constants = constants
         self.beta = beta
-        # TODO should these really all be separate dicts for constants,
-        # accumulated X/Y, and other env parameters?
-        self.accumulated = {}  # {X[j]: jax_value, Y[j]: jax_value}
+        self.accumulated_X = {}
+        self.accumulated_Y = {}
         self._jax_values = dict(initial_env)  # includes sampled params
+
+    @property
+    def accumulated(self):
+        result = {}
+        for j, v in self.accumulated_X.items():
+            result[self.structure.X[j]] = v
+        for j, v in self.accumulated_Y.items():
+            result[self.structure.Y[j]] = v
+        return result
+
+    @property
+    def activities(self):
+        """[X Y] as array with shape (..., N_processes, 2)"""
+
+        all_shapes = [
+            jnp.shape(v)
+            for v in [*self.accumulated_X.values(), *self.accumulated_Y.values()]
+        ]
+        batch_shape = jnp.broadcast_shapes(*all_shapes) if all_shapes else ()
+        default = jnp.zeros(batch_shape)
+        N = len(self.structure.processes)
+        X_j = jnp.stack([self.accumulated_X.get(j, default) for j in range(N)], axis=-1)
+        Y_j = jnp.stack([self.accumulated_Y.get(j, default) for j in range(N)], axis=-1)
+        return jnp.stack([X_j, Y_j], axis=-1)
+
+    @property
+    def X(self):
+        """X[j] as a jax array"""
+        return self.activities[..., 0]
+
+    @property
+    def Y(self):
+        """Y[j] as a jax array"""
+        return self.activities[..., 1]
 
     def eval(self, expr, with_proposed=None):
         values = dict(self._jax_values)
@@ -64,8 +97,17 @@ class NumpyroState:
         self._jax_values[sym] = value
 
     def accumulate(self, proposed):
-        for k, v in proposed.items():
-            self.accumulated[k] = self.accumulated.get(k, 0.0) + v
+        for sym, expr in proposed.items():
+            if isinstance(sym, sy.Indexed):
+                if len(sym.indices) != 1:
+                    raise ValueError("Expected X[j] or Y[j]")
+                j = int(sym.indices[0])
+                if sym.base == self.structure.X:
+                    self.accumulated_X[j] = self.accumulated_X.get(j, 0.0) + expr
+                elif sym.base == self.structure.Y:
+                    self.accumulated_Y[j] = self.accumulated_Y.get(j, 0.0) + expr
+                else:
+                    raise ValueError("Expected X[j] or Y[j]")
 
 
 class NumpyroModel:
@@ -172,18 +214,7 @@ class NumpyroModel:
                 proposed = handler(proposed, state, transform)
             state.accumulate(proposed)
 
-        return state.accumulated
-
-    def store_process_activities(self, results):
-        """Emit numpyro.deterministic for each process X[j] and Y[j].
-        Wrap this in numpyro.plate if needed."""
-        for j in range(len(self.structure.processes)):
-            xj = self.structure.X[j]
-            yj = self.structure.Y[j]
-            if xj in results:
-                numpyro.deterministic(f"X_{j}", results[xj])
-            if yj in results:
-                numpyro.deterministic(f"Y_{j}", results[yj])
+        return state
 
     def sample_params(self):
         """Emit numpyro.sample for each parameter. Returns params dict."""
@@ -194,7 +225,7 @@ class NumpyroModel:
             for name, prior in self.param_priors.items()
         }
 
-    def likelihood(self, result, obs, params=None):
+    def likelihood(self, state, obs, params=None):
         """Emit numpyro.sample(obs=...) for each observation."""
 
         if self.observations is None:
@@ -204,9 +235,7 @@ class NumpyroModel:
             params = {}
 
         for o in self.observations:
-            predicted = sympy_expr_to_jax(
-                o.expression, result, self.structure, self.constant_data, self.beta
-            )
+            predicted = state.eval(o.expression)
 
             # Resolve sigma
             if isinstance(o.sigma, str):
@@ -224,13 +253,14 @@ class NumpyroModel:
                     raise ValueError(f"Unknown sigma '{sigma_name}'")
             else:
                 sigma_val = jnp.float64(o.sigma)
-            obs_data = obs[o.name]
+            obs_data = obs[o.name] if obs is not None else None
             numpyro.sample(f"obs_{o.name}", o.noise(predicted, sigma_val), obs=obs_data)
 
-    def numpyro_model(self, obs=None):
+    def numpyro_model(self, params=None, obs=None, trace_process_activities=True):
         """Complete numpyro model: sample, forward, observe."""
-        params = self.sample_params()
-        result = self(params)
+        default_params = self.sample_params()
+        all_params = {**default_params, **(params or {})}
+        state = self(all_params)
 
         # Define shared observation plate (size inferred from obs data).
         # This plate is reused for all sample sites that vary per data point:
@@ -254,11 +284,15 @@ class NumpyroModel:
 
         if obs_plate is not None:
             with obs_plate:
-                self.store_process_activities(result)
-                self.likelihood(result, obs, params)
+                if trace_process_activities:
+                    numpyro.deterministic("X", state.X)
+                    numpyro.deterministic("Y", state.Y)
+                self.likelihood(state, obs, all_params)
         else:
-            self.store_process_activities(result)
-            self.likelihood(result, obs, params)
+            if trace_process_activities:
+                numpyro.deterministic("X", state.X)
+                numpyro.deterministic("Y", state.Y)
+            self.likelihood(state, obs, all_params)
 
 
 def _normalize_recipe(structure, recipe_data):

@@ -86,7 +86,11 @@ DEMAND_A = sy.Symbol("demand", positive=True)
 
 
 def bench_plain_flowprog(n: int) -> dict:
-    """Time the four flowprog phases for a plain N-process chain."""
+    """Time the flowprog phases for a plain N-process chain.
+
+    Lambdify is timed for both numpy (default) and math modules.
+    Eval is timed for both so we can see scalar-eval overhead from numpy.
+    """
     processes, objects, recipe = _make_chain(n)
 
     # ── Phase 1: build ────────────────────────────────────────────────────
@@ -99,23 +103,40 @@ def bench_plain_flowprog(n: int) -> dict:
     builder = do_build()
 
     # ── Phase 2: compile ─────────────────────────────────────────────────
-    # builder.build() = SympyModel.from_steps(): resolves structural symbols
-    # and accumulates values; for plain models this is O(N) work.
+    # SympyModel.from_steps(): resolves structural symbols and accumulates
+    # values; for plain models this is O(N) work.
     t_compile = _tmin(lambda: builder.build(recipe), reps=5)
     model = builder.build(recipe)
 
-    # ── Phase 3: lambdify ────────────────────────────────────────────────
-    # model.lambdify() evaluates all flow expressions symbolically (O(N²)
-    # for a chain) and then calls sy.lambdify() to produce a numpy function.
-    t_lambdify = _tmin(lambda: model.lambdify(), reps=3)
-    fn = model.lambdify()
+    # ── Phase 3a: lambdify (numpy) ───────────────────────────────────────
+    # Evaluates all flow expressions symbolically (O(N²) for a chain via
+    # to_flows + eval + intermediate substitution) then calls sy.lambdify()
+    # with numpy backend.  Suitable for vectorised / array evaluation.
+    t_lambdify_np = _tmin(lambda: model.lambdify(), reps=3)
+    fn_np = model.lambdify()
 
-    # ── Phase 4: eval ────────────────────────────────────────────────────
-    # Call the compiled numpy function; for a plain model this is O(N)
-    # numpy operations.
-    t_eval = _tmin(lambda: fn({DEMAND_A: 1.0}), reps=5, calls=20)
+    # ── Phase 3b: lambdify (math) ────────────────────────────────────────
+    # Same symbolic work; sy.lambdify() with modules='math' generates a pure
+    # Python function (no numpy).  Avoids numpy array overhead for scalar
+    # inputs and correctly compiles nested Piecewise / ITE nodes.
+    t_lambdify_math = _tmin(lambda: model.lambdify(modules="math"), reps=3)
+    fn_math = model.lambdify(modules="math")
 
-    return dict(n=n, build=t_build, compile=t_compile, lambdify=t_lambdify, eval=t_eval)
+    # ── Phase 4a: eval (numpy) ───────────────────────────────────────────
+    t_eval_np = _tmin(lambda: fn_np({DEMAND_A: 1.0}), reps=5, calls=50)
+
+    # ── Phase 4b: eval (math) ────────────────────────────────────────────
+    t_eval_math = _tmin(lambda: fn_math({DEMAND_A: 1.0}), reps=5, calls=50)
+
+    return dict(
+        n=n,
+        build=t_build,
+        compile=t_compile,
+        lambdify_np=t_lambdify_np,
+        lambdify_math=t_lambdify_math,
+        eval_np=t_eval_np,
+        eval_math=t_eval_math,
+    )
 
 
 # ── Scipy matrix comparison ───────────────────────────────────────────────────
@@ -237,14 +258,16 @@ def run_case_a(sizes, verbose=True):
             bw_rows.append(bw)
 
         if verbose:
+            bw_str = (
+                f"  | bw db_setup={bw['bw_db_setup']*1e3:.1f}ms lci={bw['bw_lci_solve']*1e3:.1f}ms"
+                if bw else ""
+            )
             print(
                 f"build={fp['build']*1e3:6.1f}ms  compile={fp['compile']*1e3:6.1f}ms  "
-                f"lambdify={fp['lambdify']*1e3:6.1f}ms  eval={fp['eval']*1e6:6.1f}µs  "
+                f"lambdify np={fp['lambdify_np']*1e3:6.1f}ms math={fp['lambdify_math']*1e3:6.1f}ms  "
+                f"eval np={fp['eval_np']*1e6:6.1f}µs math={fp['eval_math']*1e6:6.1f}µs  "
                 f"| scipy build={sp['matrix_build']*1e6:5.1f}µs solve={sp['matrix_solve']*1e6:5.1f}µs"
-                + (
-                    f"  | bw db_setup={bw['bw_db_setup']*1e3:.1f}ms lci={bw['bw_lci_solve']*1e3:.1f}ms"
-                    if bw else ""
-                )
+                + bw_str
             )
 
     return fp_rows, sp_rows, bw_rows
@@ -287,7 +310,7 @@ def _make_limit_model(k: int):
 
 
 def bench_limit_flowprog(k: int) -> dict:
-    """Time the four flowprog phases for a model with K limit steps."""
+    """Time the flowprog phases for a model with K limit steps."""
 
     # ── Phase 1: build ────────────────────────────────────────────────────
     # Includes all pull_production calls + limit() wrapping + add().
@@ -298,30 +321,35 @@ def bench_limit_flowprog(k: int) -> dict:
     # SympyModel.from_steps() processes each Limit transformation, resolving
     # structural symbols and creating Piecewise expressions.  Cost grows with
     # the depth of the accumulated expression tree.
-    t_compile = _tmin(lambda: builder.build(recipe), reps=5)
+    t_compile = _tmin(lambda: builder.build(recipe), reps=3)
     model = builder.build(recipe)
 
-    # ── Phase 3: lambdify ────────────────────────────────────────────────
-    # Evaluates all flows symbolically (substituting through nested Piecewise)
-    # and calls sy.lambdify() to produce a numpy function.
-    t_lambdify = _tmin(lambda: model.lambdify(), reps=3)
+    # ── Phase 3a: lambdify (numpy) ───────────────────────────────────────
+    # For K≥3 the generated numpy code contains ITE nodes that numpy's
+    # select cannot handle with scalar inputs — eval will fail there.
+    # We still time it because it's part of the compile-time story.
+    t_lambdify_np = _tmin(lambda: model.lambdify(), reps=3)
 
-    # ── Phase 4: eval ────────────────────────────────────────────────────
-    # SymPy's numpy code generator has a known limitation with nested ITE
-    # (if-then-else) nodes that appear in deeply-nested Piecewise for K≥3:
-    # it emits Python booleans where numpy arrays are required.  We therefore
-    # use model.eval() (symbolic substitution) for this phase, which is
-    # correct for all K but is slower than a working lambdify call would be.
+    # ── Phase 3b: lambdify (math) ────────────────────────────────────────
+    # modules='math' generates pure Python code; Piecewise / ITE compile
+    # correctly and there is no numpy overhead for scalar evaluation.
+    t_lambdify_math = _tmin(lambda: model.lambdify(modules="math"), reps=3)
+    fn_math = model.lambdify(modules="math")
+
+    # ── Phase 4: eval (math) ─────────────────────────────────────────────
     demand_sym = sy.Symbol("demand", positive=True)
-    subs = {demand_sym: 1.0}
-    subs.update({sy.Symbol(f"d{s}", positive=True): 0.5 for s in range(1, k + 1)})
-    t_eval = _tmin(
-        lambda: float(model.eval(model.Y[0], subs)),
-        reps=3,
-        calls=1,
-    )
+    params = {demand_sym: 1.0}
+    params.update({sy.Symbol(f"d{s}", positive=True): 0.5 for s in range(1, k + 1)})
+    t_eval_math = _tmin(lambda: fn_math(params), reps=5, calls=50)
 
-    return dict(k=k, build=t_build, compile=t_compile, lambdify=t_lambdify, eval=t_eval)
+    return dict(
+        k=k,
+        build=t_build,
+        compile=t_compile,
+        lambdify_np=t_lambdify_np,
+        lambdify_math=t_lambdify_math,
+        eval_math=t_eval_math,
+    )
 
 
 def run_case_b(step_counts, verbose=True, bail_seconds=10.0):
@@ -343,13 +371,15 @@ def run_case_b(step_counts, verbose=True, bail_seconds=10.0):
         if verbose:
             print(
                 f"build={row['build']*1e3:6.2f}ms  compile={row['compile']*1e3:6.2f}ms  "
-                f"lambdify={row['lambdify']*1e3:6.2f}ms  eval={row['eval']*1e6:6.1f}µs"
+                f"lambdify np={row['lambdify_np']*1e3:7.2f}ms math={row['lambdify_math']*1e3:7.2f}ms  "
+                f"eval(math)={row['eval_math']*1e6:6.1f}µs"
             )
 
-        if row["lambdify"] >= bail_seconds:
+        if row["lambdify_np"] >= bail_seconds:
             if verbose:
                 print(
-                    f"  (stopping: lambdify={row['lambdify']:.1f}s ≥ bail threshold {bail_seconds}s)"
+                    f"  (stopping: lambdify(numpy)={row['lambdify_np']:.1f}s "
+                    f"≥ bail threshold {bail_seconds}s)"
                 )
             break
 
@@ -392,7 +422,8 @@ def main():
         print()
         print("Case (a): Plain pull_production — comparable to matrix LCI solver")
         print("-" * 72)
-        print("Flowprog phases: build | compile | lambdify | eval")
+        print("Flowprog: build | compile | lambdify(np/math) | eval(np/math)")
+        print("  lambdify(math): pure-Python function, lower overhead for scalar eval")
         print("Scipy baseline:  matrix_build | matrix_solve")
         if bw2data:
             print("Brightway:       bw_db_setup | bw_lci_solve")
@@ -405,11 +436,11 @@ def main():
         print()
         print("Case (b): limit() with K steps — expression branch growth")
         print("-" * 72)
-        print("Flowprog phases: build | compile | lambdify | eval(symbolic)")
-        print("  eval uses model.eval() [symbolic subst] — lambdified eval has")
-        print("  a SymPy ITE→numpy code-gen limitation for nested Piecewise.")
+        print("Flowprog: build | compile | lambdify(np/math) | eval(math)")
+        print("  lambdify(numpy) timed for completeness; eval uses math because")
+        print("  SymPy's numpy code-gen miscompiles nested ITE for scalar inputs.")
         print("(no direct matrix-solver equivalent for limit() models)")
-        print(f"(auto-stops when lambdify > {args.bail:.0f}s)")
+        print(f"(auto-stops when lambdify(numpy) > {args.bail:.0f}s)")
         print()
         run_case_b(steps, bail_seconds=args.bail)
 

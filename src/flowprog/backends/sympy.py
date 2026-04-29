@@ -387,7 +387,7 @@ class SympyModel:
 
         return result
 
-    def lambdify(self, data=None, expressions: Optional[dict] = None):
+    def lambdify(self, data=None, expressions: Optional[dict] = None, modules=None):
         """Return function to evaluate model.
 
         Recipe data is automatically included (early substitution).
@@ -395,6 +395,11 @@ class SympyModel:
         :param data: Additional fixed data (beyond recipe) for early substitution
         :param expressions: Optional dict of expressions to evaluate.
                            If None, uses model flows.
+        :param modules: Passed to sympy.lambdify().  Use ``'math'`` for
+            scalar-only evaluation: avoids numpy array overhead and correctly
+            handles nested ``Piecewise`` / ``ITE`` nodes that numpy's code
+            generator can miscompile for scalar inputs.  Default ``None``
+            uses numpy (suitable for vectorised / array evaluation).
         :return: Callable function that takes parameter dict and returns results
         """
         if data is None:
@@ -412,7 +417,7 @@ class SympyModel:
             expr_values = expressions.values()
 
         # Function that returns a vector of values in same order as index
-        func = self._lambdify(expr_values, all_data)
+        func = self._lambdify(expr_values, all_data, modules=modules)
 
         # Create a friendlier wrapper
         str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
@@ -435,11 +440,12 @@ class SympyModel:
 
         return wrapper
 
-    def _lambdify(self, values, data_for_intermediates):
+    def _lambdify(self, values, data_for_intermediates, modules=None):
         """Internal lambdify implementation.
 
         :param values: Expressions to lambdify
         :param data_for_intermediates: Data to substitute into intermediates (early)
+        :param modules: Passed directly to sympy.lambdify().  ``None`` uses numpy.
         :return: Lambdified function
         """
         # Substitute recipe/data in intermediates now (early substitution)
@@ -467,7 +473,11 @@ class SympyModel:
         args = {x for x in args if not isinstance(x, sy.Indexed)}
         args = list(args)
 
-        f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr))
+        kwargs = {}
+        if modules is not None:
+            kwargs["modules"] = modules
+
+        f = sy.lambdify(args, values, cse=lambda expr: (subexpressions, expr), **kwargs)
 
         return f
 

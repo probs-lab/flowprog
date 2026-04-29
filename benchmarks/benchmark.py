@@ -9,8 +9,11 @@ Usage:
 
 Case (a): Plain models using pull_production only
 ──────────────────────────────────────────────────
-Linear chain of N processes: P0→O0←P1→O1←…←P(N-1)→O(N-1).
-Each process Pi produces Oi and consumes O(i-1); coefficients S=1, U=0.8.
+Two model shapes:
+  chain  : linear chain P0→O0←P1→O1←…←P(N-1)→O(N-1)
+  fan    : one root process consuming N leaf processes in parallel
+
+Each process Pi produces Oi and (in the chain) consumes O(i-1); S=1, U=0.8.
 We demand 1 unit of the final object and trace backwards.
 
 Flowprog phases timed separately:
@@ -27,18 +30,22 @@ Comparison (brightway, if installed):
   bw_db_setup  : write activities to bw2 database
   bw_lci_solve : LCA() + lca.lci()
 
-Case (b): Models using limit() with increasing number of steps
-───────────────────────────────────────────────────────────────
-A single "Supply" process produces "product". We add:
-  step 0        : base demand (no limit)
-  steps 1..K    : additional demand, each limited by Supply's cumulative output
+Case (b): Chain-of-processes limit model with K limit steps
+─────────────────────────────────────────────────────────────
+A realistic chain where:
+  - K+1 processes form a linear supply chain
+  - P_i produces "intermediate_{i-1}" (or "output" for i=1), consuming "intermediate_i"
+  - Pfinal produces the last intermediate with no upstream inputs
 
-Each limit() step adds a Piecewise layer that references the accumulated
-state from all prior steps, so the expression tree grows exponentially
-with K. This tests compile/lambdify performance as branch count explodes.
+Steps:
+  step 1   : pull from "output" up to capacity of P1 (stopping at intermediate_1)
+  step 2..K: satisfy remaining deficit of each intermediate up to P_{i}'s capacity
+  step K+1 : satisfy remaining deficit of last intermediate (unconstrained)
 
-Same four flowprog phases timed; no brightway comparison (limits have no
-direct matrix-solver equivalent).
+Each limit() step adds a Piecewise layer referencing accumulated state from prior
+steps (via object_production_deficit), so expression complexity grows with K.
+
+Same four flowprog phases timed; no brightway comparison.
 """
 
 import timeit
@@ -64,7 +71,7 @@ def _tmin(fn, *, reps: int = 3, calls: int = 1) -> float:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Case (a): plain pull_production
+# Case (a): plain pull_production — chain and fan variants
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _make_chain(n: int):
@@ -74,62 +81,67 @@ def _make_chain(n: int):
         Process(f"P{i}", produces=[f"O{i}"], consumes=[f"O{i-1}"] if i > 0 else [])
         for i in range(n)
     ]
-    # Build recipe using a temporary builder (symbol objects are SymPy-cached,
-    # so the same S[i,j] symbols work across builder instances of the same size)
     tmp = ModelBuilder(processes, objects)
     recipe = {tmp.S[i, i]: 1.0 for i in range(n)}
     recipe.update({tmp.U[i - 1, i]: 0.8 for i in range(1, n)})
     return processes, objects, recipe
 
 
+def _make_fan(n_leaves: int):
+    """Fan/tree: one root process consuming N leaf processes in parallel.
+
+    Structure:
+      P_root : produces "output", consumes "leaf_0".."leaf_{N-1}"
+      P_leaf_i : produces "leaf_i"
+
+    The pull_production("output", demand) fans out to all N leaf processes
+    simultaneously, unlike the linear chain where it recurses depth-first.
+    """
+    objects = [Object("output", MASS, has_market=True)] + [
+        Object(f"leaf_{i}", MASS, has_market=True) for i in range(n_leaves)
+    ]
+    processes = [
+        Process("P_root", produces=["output"], consumes=[f"leaf_{i}" for i in range(n_leaves)])
+    ] + [
+        Process(f"P_leaf_{i}", produces=[f"leaf_{i}"], consumes=[]) for i in range(n_leaves)
+    ]
+    tmp = ModelBuilder(processes, objects)
+    # P_root (proc index 0) produces "output" (obj index 0)
+    recipe = {tmp.S[0, 0]: 1.0}
+    # P_root consumes leaf_i (obj index i+1): U[i+1, 0] = 0.8
+    recipe.update({tmp.U[i + 1, 0]: 0.8 for i in range(n_leaves)})
+    # P_leaf_i (proc index i+1) produces leaf_i (obj index i+1): S[i+1, i+1] = 1.0
+    recipe.update({tmp.S[i + 1, i + 1]: 1.0 for i in range(n_leaves)})
+    return processes, objects, recipe
+
+
 DEMAND_A = sy.Symbol("demand", positive=True)
 
 
-def bench_plain_flowprog(n: int) -> dict:
-    """Time the flowprog phases for a plain N-process chain.
+def _bench_plain_flowprog(processes, objects, recipe, final_object: str) -> dict:
+    """Time flowprog phases for any model specified by processes/objects/recipe."""
 
-    Lambdify is timed for both numpy (default) and math modules.
-    Eval is timed for both so we can see scalar-eval overhead from numpy.
-    """
-    processes, objects, recipe = _make_chain(n)
-
-    # ── Phase 1: build ────────────────────────────────────────────────────
     def do_build():
         b = ModelBuilder(processes, objects)
-        b.add(b.pull_production(f"O{n - 1}", DEMAND_A))
+        b.add(b.pull_production(final_object, DEMAND_A))
         return b
 
     t_build = _tmin(do_build, reps=5)
     builder = do_build()
 
-    # ── Phase 2: compile ─────────────────────────────────────────────────
-    # SympyModel.from_steps(): resolves structural symbols and accumulates
-    # values; for plain models this is O(N) work.
     t_compile = _tmin(lambda: builder.build(recipe), reps=5)
     model = builder.build(recipe)
 
-    # ── Phase 3a: lambdify (numpy) ───────────────────────────────────────
-    # Evaluates all flow expressions symbolically (O(N²) for a chain via
-    # to_flows + eval + intermediate substitution) then calls sy.lambdify()
-    # with numpy backend.  Suitable for vectorised / array evaluation.
     t_lambdify_np = _tmin(lambda: model.lambdify(), reps=3)
     fn_np = model.lambdify()
 
-    # ── Phase 3b: lambdify (math) ────────────────────────────────────────
-    # Same symbolic work; sy.lambdify() with modules='math' generates a pure
-    # Python function (no numpy).  Avoids numpy array overhead for scalar
-    # inputs and correctly compiles nested Piecewise / ITE nodes.
     t_lambdify_math = _tmin(lambda: model.lambdify(modules="math"), reps=3)
     fn_math = model.lambdify(modules="math")
 
-    # ── Phase 4a: eval (numpy) ───────────────────────────────────────────
     t_eval_np = _tmin(lambda: fn_np({DEMAND_A: 1.0}), reps=5, calls=50)
-
-    # ── Phase 4b: eval (math) ────────────────────────────────────────────
     t_eval_math = _tmin(lambda: fn_math({DEMAND_A: 1.0}), reps=5, calls=50)
 
     return dict(
-        n=n,
         build=t_build,
         compile=t_compile,
         lambdify_np=t_lambdify_np,
@@ -139,19 +151,28 @@ def bench_plain_flowprog(n: int) -> dict:
     )
 
 
+def bench_plain_flowprog_chain(n: int) -> dict:
+    """Time the flowprog phases for a plain N-process chain."""
+    processes, objects, recipe = _make_chain(n)
+    result = _bench_plain_flowprog(processes, objects, recipe, f"O{n - 1}")
+    return dict(n=n, **result)
+
+
+def bench_plain_flowprog_fan(n_leaves: int) -> dict:
+    """Time the flowprog phases for a fan model with N leaf processes."""
+    processes, objects, recipe = _make_fan(n_leaves)
+    result = _bench_plain_flowprog(processes, objects, recipe, "output")
+    return dict(n=n_leaves, **result)
+
+
 # ── Scipy matrix comparison ───────────────────────────────────────────────────
 
 def bench_plain_scipy(n: int) -> dict:
-    """
-    Time a scipy sparse matrix solve equivalent to the N-process chain LCI.
+    """Time a scipy sparse matrix solve for an N-process chain.
 
     Technosphere matrix A:
       A[i,i] = 1.0   (production)
-      A[i-1,i] = -0.8 (consumption of prior output, negative = consumed)
-
-    Phases:
-      matrix_build : construct the sparse CSC matrix
-      matrix_solve : spsolve(A, demand_vector)
+      A[i-1,i] = -0.8 (consumption of prior output)
     """
     def do_build():
         rows, cols, vals = [], [], []
@@ -184,12 +205,7 @@ def _try_import_bw():
 
 
 def bench_plain_bw25(n: int, project_name: str = "flowprog_benchmark") -> Optional[dict]:
-    """
-    Time brightway25 for an equivalent N-process chain.
-
-    Phases:
-      bw_db_setup  : create project + write activities + exchanges to bw2 DB
-      bw_lci_solve : LCA({fu: 1}) + lca.lci()
+    """Time brightway25 for an equivalent N-process chain.
 
     Returns None if bw2data/bw2calc are not installed.
     """
@@ -240,19 +256,20 @@ def run_case_a(sizes, verbose=True):
     bw2data, bw2calc = _try_import_bw()
     has_bw = bw2data is not None
 
-    fp_rows = []
+    chain_rows = []
+    fan_rows = []
     sp_rows = []
     bw_rows = []
 
     for n in sizes:
         if verbose:
-            print(f"  N={n:4d}...", end=" ", flush=True)
+            print(f"  N={n:4d} chain...", end=" ", flush=True)
 
-        fp = bench_plain_flowprog(n)
+        fp = bench_plain_flowprog_chain(n)
         sp = bench_plain_scipy(n)
         bw = bench_plain_bw25(n) if has_bw else None
 
-        fp_rows.append(fp)
+        chain_rows.append(fp)
         sp_rows.append(sp)
         if bw:
             bw_rows.append(bw)
@@ -270,76 +287,112 @@ def run_case_a(sizes, verbose=True):
                 + bw_str
             )
 
-    return fp_rows, sp_rows, bw_rows
+    if verbose:
+        print()
+        print("  Fan variant (N = number of leaf processes):")
+    for n in sizes:
+        if verbose:
+            print(f"  N={n:4d} fan  ...", end=" ", flush=True)
+
+        fp = bench_plain_flowprog_fan(n)
+        fan_rows.append(fp)
+
+        if verbose:
+            print(
+                f"build={fp['build']*1e3:6.1f}ms  compile={fp['compile']*1e3:6.1f}ms  "
+                f"lambdify np={fp['lambdify_np']*1e3:6.1f}ms math={fp['lambdify_math']*1e3:6.1f}ms  "
+                f"eval np={fp['eval_np']*1e6:6.1f}µs math={fp['eval_math']*1e6:6.1f}µs"
+            )
+
+    return chain_rows, fan_rows, sp_rows, bw_rows
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Case (b): limit() with K steps
+# Case (b): chain-of-processes limit model
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _make_limit_model(k: int):
-    """
-    Build a ModelBuilder with K+1 steps (1 base demand + K limited extras).
+def _make_chain_limit_model(k: int):
+    """Chain-of-processes model with K limit steps.
 
-    Structure:
-      Supply  →  product      (S=1.0)
+    Structure (K=2 example):
+      Objects  : "output", "intermediate_1", "intermediate_2"
+      Processes: P1 (output ← intermediate_1)
+                 P2 (intermediate_1 ← intermediate_2)
+                 Pfinal (intermediate_2 ← [nothing])
 
     Steps:
-      step 0   : pull_production("product", demand_sym)   — no limit
-      step 1..K: pull_production("product", d_k_sym), limited by Y[Supply] ≤ cap_k
-                 cap_k = k + 5.0  (numeric, baked into expression)
+      1      : limit(pull_production("output", demand, until_objects=["intermediate_1"]),
+                     expr("ProcessOutput", process_id="P1", object_id="output"), cap_1)
+      2..K   : limit(pull_production("intermediate_{i-1}",
+                                     object_production_deficit("intermediate_{i-1}"),
+                                     until_objects=["intermediate_i"]),
+                     expr("ProcessOutput", process_id="P_{i}", object_id="intermediate_{i-1}"),
+                     cap_i)
+      K+1    : pull_production("intermediate_K",
+                               object_production_deficit("intermediate_K"))
 
-    With K limit steps the expression for Y[Supply] contains K nested
-    Piecewise clauses, so complexity grows exponentially with K.
+    Each limit step references the accumulated production deficit of the
+    previous intermediate, so expression complexity grows with K.
     """
-    processes = [Process("Supply", produces=["product"], consumes=[])]
-    objects = [Object("product", MASS, has_market=True)]
+    object_names = ["output"] + [f"intermediate_{i}" for i in range(1, k + 1)]
+    objects = [Object(name, MASS, has_market=True) for name in object_names]
+
+    # K limited processes in the chain + 1 unconstrained final process
+    # Process i (0-indexed) = P_{i+1}: produces object_names[i], consumes object_names[i+1]
+    # Process K = Pfinal: produces object_names[K], no consumption
+    processes = [
+        Process(f"P{i + 1}", produces=[object_names[i]], consumes=[object_names[i + 1]])
+        for i in range(k)
+    ] + [
+        Process("Pfinal", produces=[object_names[k]], consumes=[])
+    ]
+
     b = ModelBuilder(processes, objects)
 
     demand_sym = sy.Symbol("demand", positive=True)
-    b.add(b.pull_production("product", demand_sym))
 
-    for step in range(1, k + 1):
-        d_sym = sy.Symbol(f"d{step}", positive=True)
-        cap = float(step + 5)
-        act = b.pull_production("product", d_sym)
-        b.add(b.limit(act, b.Y[0], cap))
+    # Step 1: pull "output" up to capacity of P1
+    act1 = b.pull_production("output", demand_sym, until_objects=["intermediate_1"])
+    b.add(b.limit(act1, b.expr("ProcessOutput", process_id="P1", object_id="output"), 10.0))
 
-    recipe = {b.S[0, 0]: 1.0}
+    # Steps 2..K: satisfy remaining deficit at each intermediate
+    for i in range(2, k + 1):
+        obj_name = object_names[i - 1]       # "intermediate_{i-1}"
+        next_obj = object_names[i]            # "intermediate_i"
+        pid = f"P{i}"
+        deficit = b.object_production_deficit(obj_name)
+        act = b.pull_production(obj_name, deficit, until_objects=[next_obj])
+        cap = 10.0 + i
+        b.add(b.limit(act, b.expr("ProcessOutput", process_id=pid, object_id=obj_name), cap))
+
+    # Final step: satisfy remaining deficit of last intermediate (unconstrained)
+    b.add(b.pull_production(object_names[k], b.object_production_deficit(object_names[k])))
+
+    # Recipe: process i (0-based) produces object i, consumes object i+1
+    # S[i, i] = 1.0 for i in 0..K
+    # U[i+1, i] = 0.8 for i in 0..K-1 (process i consumes next object)
+    recipe = {b.S[i, i]: 1.0 for i in range(k + 1)}
+    recipe.update({b.U[i + 1, i]: 0.8 for i in range(k)})
+
     return b, recipe
 
 
-def bench_limit_flowprog(k: int) -> dict:
-    """Time the flowprog phases for a model with K limit steps."""
+def bench_chain_limit_flowprog(k: int) -> dict:
+    """Time flowprog phases for the chain-of-processes limit model with K limit steps."""
 
-    # ── Phase 1: build ────────────────────────────────────────────────────
-    # Includes all pull_production calls + limit() wrapping + add().
-    t_build = _tmin(lambda: _make_limit_model(k), reps=5)
-    builder, recipe = _make_limit_model(k)
+    t_build = _tmin(lambda: _make_chain_limit_model(k), reps=5)
+    builder, recipe = _make_chain_limit_model(k)
 
-    # ── Phase 2: compile ─────────────────────────────────────────────────
-    # SympyModel.from_steps() processes each Limit transformation, resolving
-    # structural symbols and creating Piecewise expressions.  Cost grows with
-    # the depth of the accumulated expression tree.
     t_compile = _tmin(lambda: builder.build(recipe), reps=3)
     model = builder.build(recipe)
 
-    # ── Phase 3a: lambdify (numpy) ───────────────────────────────────────
-    # For K≥3 the generated numpy code contains ITE nodes that numpy's
-    # select cannot handle with scalar inputs — eval will fail there.
-    # We still time it because it's part of the compile-time story.
     t_lambdify_np = _tmin(lambda: model.lambdify(), reps=3)
 
-    # ── Phase 3b: lambdify (math) ────────────────────────────────────────
-    # modules='math' generates pure Python code; Piecewise / ITE compile
-    # correctly and there is no numpy overhead for scalar evaluation.
     t_lambdify_math = _tmin(lambda: model.lambdify(modules="math"), reps=3)
     fn_math = model.lambdify(modules="math")
 
-    # ── Phase 4: eval (math) ─────────────────────────────────────────────
     demand_sym = sy.Symbol("demand", positive=True)
     params = {demand_sym: 1.0}
-    params.update({sy.Symbol(f"d{s}", positive=True): 0.5 for s in range(1, k + 1)})
     t_eval_math = _tmin(lambda: fn_math(params), reps=5, calls=50)
 
     return dict(
@@ -353,19 +406,16 @@ def bench_limit_flowprog(k: int) -> dict:
 
 
 def run_case_b(step_counts, verbose=True, bail_seconds=10.0):
-    """
-    Run case (b) for each K in step_counts.
+    """Run case (b) for each K in step_counts.
 
-    Stops early if lambdify time exceeds bail_seconds — once expression
-    complexity makes lambdify impractical there is no point continuing to
-    larger K values.
+    Stops early if lambdify_np time exceeds bail_seconds.
     """
     rows = []
     for k in step_counts:
         if verbose:
-            print(f"  K={k:3d} steps...", end=" ", flush=True)
+            print(f"  K={k:3d} limit steps...", end=" ", flush=True)
 
-        row = bench_limit_flowprog(k)
+        row = bench_chain_limit_flowprog(k)
         rows.append(row)
 
         if verbose:
@@ -379,7 +429,7 @@ def run_case_b(step_counts, verbose=True, bail_seconds=10.0):
             if verbose:
                 print(
                     f"  (stopping: lambdify(numpy)={row['lambdify_np']:.1f}s "
-                    f"≥ bail threshold {bail_seconds}s)"
+                    f">= bail threshold {bail_seconds}s)"
                 )
             break
 
@@ -392,10 +442,9 @@ def run_case_b(step_counts, verbose=True, bail_seconds=10.0):
 
 SIZES_FULL = [5, 10, 20, 50, 100, 200]
 SIZES_QUICK = [5, 10, 20]
-# Case (b) steps: benchmark stops automatically once lambdify exceeds BAIL_SECONDS
 STEPS_FULL = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16]
 STEPS_QUICK = [1, 2, 3, 4, 5]
-BAIL_SECONDS = 10.0   # stop case (b) if a single lambdify call exceeds this
+BAIL_SECONDS = 10.0
 
 
 def main():
@@ -414,14 +463,14 @@ def main():
 
     bw2data, _ = _try_import_bw()
 
-    print("=" * 72)
+    print("=" * 78)
     print("Flowprog performance benchmark")
-    print("=" * 72)
+    print("=" * 78)
 
     if run_a:
         print()
-        print("Case (a): Plain pull_production — comparable to matrix LCI solver")
-        print("-" * 72)
+        print("Case (a): Plain pull_production — chain and fan variants")
+        print("-" * 78)
         print("Flowprog: build | compile | lambdify(np/math) | eval(np/math)")
         print("  lambdify(math): pure-Python function, lower overhead for scalar eval")
         print("Scipy baseline:  matrix_build | matrix_solve")
@@ -434,12 +483,14 @@ def main():
 
     if run_b:
         print()
-        print("Case (b): limit() with K steps — expression branch growth")
-        print("-" * 72)
+        print("Case (b): Chain-of-processes limit model — K limit steps")
+        print("-" * 78)
+        print("Chain: P1(output←int1) → P2(int1←int2) → … → Pfinal(intK)")
+        print("Each step adds a Piecewise limit on the next process's output,")
+        print("referencing accumulated production deficit from prior steps.")
         print("Flowprog: build | compile | lambdify(np/math) | eval(math)")
-        print("  lambdify(numpy) timed for completeness; eval uses math because")
-        print("  SymPy's numpy code-gen miscompiles nested ITE for scalar inputs.")
-        print("(no direct matrix-solver equivalent for limit() models)")
+        print("  eval uses math module: SymPy's numpy codegen miscompiles nested")
+        print("  Piecewise/ITE nodes for scalar inputs.")
         print(f"(auto-stops when lambdify(numpy) > {args.bail:.0f}s)")
         print()
         run_case_b(steps, bail_seconds=args.bail)

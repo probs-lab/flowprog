@@ -1,9 +1,8 @@
 from .sympy import SympyModel
-from .numpyro import NumpyroModel
 from .markdown import compile_markdown
 
-__all__ = [
-    "SympyModel",
-    "NumpyroModel",
-    "compile_markdown",
-]
+try:
+    from .numpyro import NumpyroModel
+    __all__ = ["SympyModel", "NumpyroModel", "compile_markdown"]
+except ImportError:
+    __all__ = ["SympyModel", "compile_markdown"]

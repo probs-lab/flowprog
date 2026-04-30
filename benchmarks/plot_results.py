@@ -1,5 +1,11 @@
 """Plot benchmark results from benchmarks/results/ CSV files.
 
+Layout: 3 rows × 2 columns
+  rows    : expression-structure counts | build/compile/lambdify times | eval times
+  columns : case (a) plain pull_production vs N | case (b) limit steps vs K
+  y-axis  : shared across each row (same scale for both cases)
+  x-axis  : shared within each column (counts share x with timings)
+
 Usage:
     python benchmarks/plot_results.py                       # most recent run
     python benchmarks/plot_results.py --ts 20260430_063850  # specific timestamp
@@ -12,6 +18,7 @@ import os
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
@@ -19,7 +26,6 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 
 # ── colour / style scheme ─────────────────────────────────────────────────────
 
-# One colour per phase, shared across subplots
 PHASE_COLOR = {
     "build":          "tab:orange",
     "compile":        "tab:blue",
@@ -40,16 +46,6 @@ STRUCT_COLOR = {
     "n_free_symbols":   "tab:green",
 }
 
-# Linestyle / marker per model variant
-VARIANT_STYLE = {
-    "chain":  dict(linestyle="-",  marker="o", markersize=5),
-    "fan":    dict(linestyle="--", marker="s", markersize=5),
-    "scipy":  dict(linestyle=":",  marker="^", markersize=5),
-    "bw":     dict(linestyle="-.", marker="D", markersize=5),
-    "single": dict(linestyle="-",  marker="o", markersize=5),
-}
-
-# Human-readable labels
 PHASE_LABEL = {
     "build":          "build",
     "compile":        "compile",
@@ -63,6 +59,11 @@ PHASE_LABEL = {
     "bw_lci_solve":   "BW lci solve",
 }
 
+# Solid = chain/primary; dashed = fan/secondary variant
+STYLE_PRIMARY   = dict(linestyle="-",  marker="o", markersize=5, lw=1.5)
+STYLE_SECONDARY = dict(linestyle="--", marker="s", markersize=5, lw=1.5)
+STYLE_SCIPY     = dict(linestyle=":",  marker="^", markersize=5, lw=1.5)
+STYLE_BW        = dict(linestyle="-.", marker="D", markersize=5, lw=1.5)
 
 # ── CSV loading ───────────────────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ def _load(prefix: str, ts: str | None) -> pd.DataFrame | None:
     return pd.read_csv(latest)
 
 
-# ── axis formatting ───────────────────────────────────────────────────────────
+# ── drawing helpers ───────────────────────────────────────────────────────────
 
 def _loglog_axis(ax, xlabel: str, ylabel: str, title: str):
     ax.set_xscale("log")
@@ -86,142 +87,194 @@ def _loglog_axis(ax, xlabel: str, ylabel: str, title: str):
     ax.set_xlabel(xlabel, fontsize=9)
     ax.set_ylabel(ylabel, fontsize=9)
     ax.set_title(title, fontsize=10, fontweight="bold")
-    ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.7)
+    ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
     ax.tick_params(labelsize=8)
-    # Integer ticks on x-axis (N or K are always integers)
     ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
 
 
-def _add_line(ax, df: pd.DataFrame, xcol: str, ycol: str, color: str,
-              label: str, **style):
+def _line(ax, df: pd.DataFrame, xcol: str, ycol: str, color: str,
+          label: str, **style):
+    """Plot one line, dropping NaN/blank rows."""
+    if df is None or ycol not in df.columns:
+        return
     sub = df[[xcol, ycol]].dropna()
     if sub.empty:
         return
     ax.plot(sub[xcol], sub[ycol], color=color, label=label, **style)
 
 
-# ── per-panel plot functions ──────────────────────────────────────────────────
-
-def _plot_a_counts(ax, chain: pd.DataFrame | None, fan: pd.DataFrame | None):
-    _loglog_axis(ax, "", "count (ops / symbols)", "Case (a) — expression structure")
-    for col, color in STRUCT_COLOR.items():
-        if chain is not None and col in chain.columns:
-            _add_line(ax, chain, "n", col, color,
-                      f"{col} chain", **VARIANT_STYLE["chain"])
-        if fan is not None and col in fan.columns:
-            _add_line(ax, fan, "n", col, color,
-                      f"{col} fan", **VARIANT_STYLE["fan"])
-    ax.legend(fontsize=7, ncol=2)
-
-
-def _plot_a_timings(ax, chain: pd.DataFrame | None, fan: pd.DataFrame | None,
-                    scipy_df: pd.DataFrame | None, bw_df: pd.DataFrame | None):
-    _loglog_axis(ax, "N (processes)", "time (s)", "Case (a) — timings")
-
-    fp_phases = ["build", "compile", "lambdify_np", "lambdify_math",
-                 "eval_np", "eval_math"]
-    for phase in fp_phases:
-        color = PHASE_COLOR[phase]
-        label = PHASE_LABEL[phase]
-        if chain is not None and phase in chain.columns:
-            # Only the chain variant gets a legend entry; fan uses the same
-            # colour with dashed style so the reader can see any divergence
-            # without doubling the legend size.
-            _add_line(ax, chain, "n", phase, color,
-                      label, **VARIANT_STYLE["chain"])
-        if fan is not None and phase in fan.columns:
-            _add_line(ax, fan, "n", phase, color,
-                      "_nolegend_", **VARIANT_STYLE["fan"])
-
-    if scipy_df is not None:
-        for col in ["matrix_build", "matrix_solve"]:
-            if col in scipy_df.columns:
-                _add_line(ax, scipy_df, "n", col,
-                          PHASE_COLOR[col], PHASE_LABEL[col],
-                          **VARIANT_STYLE["scipy"])
-
-    if bw_df is not None:
-        for col in ["bw_db_setup", "bw_lci_solve"]:
-            if col in bw_df.columns:
-                _add_line(ax, bw_df, "n", col,
-                          PHASE_COLOR[col], PHASE_LABEL[col],
-                          **VARIANT_STYLE["bw"])
-
-    from matplotlib.lines import Line2D
-    # Primary legend: one entry per phase (colours)
-    leg1 = ax.legend(fontsize=7, ncol=2, loc="upper left")
-    ax.add_artist(leg1)
-    # Secondary legend: linestyle key (chain vs fan)
-    ax.legend(
-        handles=[
-            Line2D([0], [0], color="gray", linestyle="-",  marker="o",
-                   markersize=4, label="chain"),
-            Line2D([0], [0], color="gray", linestyle="--", marker="s",
-                   markersize=4, label="fan (dashed)"),
-        ],
-        fontsize=7, loc="lower right",
-        framealpha=0.8,
+def _variant_legend(ax, primary_label="chain", secondary_label="fan"):
+    """Add a small grey legend distinguishing primary (solid) from secondary (dashed)."""
+    ax.add_artist(
+        ax.legend(
+            handles=[
+                Line2D([0], [0], color="0.4", lw=1.5, linestyle="-",
+                       marker="o", markersize=4, label=primary_label),
+                Line2D([0], [0], color="0.4", lw=1.5, linestyle="--",
+                       marker="s", markersize=4, label=secondary_label),
+            ],
+            fontsize=7, loc="lower right", framealpha=0.8,
+            title="variant", title_fontsize=7,
+        )
     )
 
 
-def _plot_b_counts(ax, b_df: pd.DataFrame | None):
-    _loglog_axis(ax, "", "count (ops / symbols)", "Case (b) — expression structure")
-    if b_df is None:
+def _reference_line(ax, slope: float = 1.0, label: str = "linear"):
+    """Add a subtle power-law reference line anchored at the centre of the view.
+
+    For a log-log plot the line appears straight with the given slope.
+    Must be called after data is plotted so auto-scaling has run.
+    """
+    xmin, xmax = ax.get_xlim()
+    ymin, ymax = ax.get_ylim()
+    if any(v <= 0 for v in (xmin, xmax, ymin, ymax)):
         return
+    # Anchor at geometric centre of current view
+    xc = 10 ** ((np.log10(xmin) + np.log10(xmax)) / 2)
+    yc = 10 ** ((np.log10(ymin) + np.log10(ymax)) / 2)
+    c = yc / xc ** slope
+    x = np.array([xmin, xmax])
+    y = np.clip(c * x ** slope, ymin * 0.1, ymax * 10)
+    ax.plot(x, y, color="0.75", lw=1.0, linestyle="--",
+            zorder=0, label=f"~{label}")
+
+
+# ── panel functions ───────────────────────────────────────────────────────────
+
+def _panel_counts(ax, primary: pd.DataFrame | None, secondary: pd.DataFrame | None,
+                  xcol: str, title: str):
+    """Expression-structure counts panel (top row)."""
+    _loglog_axis(ax, "", "count (ops / symbols)", title)
+
+    # One legend entry per metric colour; primary/secondary distinguished by style
     for col, color in STRUCT_COLOR.items():
-        if col in b_df.columns:
-            _add_line(ax, b_df, "k", col, color, col, **VARIANT_STYLE["single"])
-    ax.legend(fontsize=7)
+        _line(ax, primary,   xcol, col, color, col, **STYLE_PRIMARY)
+        _line(ax, secondary, xcol, col, color, "_nolegend_", **STYLE_SECONDARY)
+
+    leg = ax.legend(fontsize=7, loc="upper left", framealpha=0.8)
+    ax.add_artist(leg)
+    if secondary is not None:
+        _variant_legend(ax)
 
 
-def _plot_b_timings(ax, b_df: pd.DataFrame | None):
-    _loglog_axis(ax, "K (limit steps)", "time (s)", "Case (b) — timings")
-    if b_df is None:
-        return
-    phases = ["build", "compile", "lambdify_np", "lambdify_math", "eval_math"]
+def _panel_build(ax, primary: pd.DataFrame | None, secondary: pd.DataFrame | None,
+                 xcol: str, title: str,
+                 scipy_df: pd.DataFrame | None = None,
+                 bw_df: pd.DataFrame | None = None,
+                 phases=("build", "compile", "lambdify_np", "lambdify_math")):
+    """Build / compile / lambdify timing panel (middle row)."""
+    _loglog_axis(ax, "", "time (s)", title)
+
     for phase in phases:
-        if phase in b_df.columns:
-            color = PHASE_COLOR.get(phase, "black")
-            label = PHASE_LABEL.get(phase, phase)
-            _add_line(ax, b_df, "k", phase, color, label,
-                      **VARIANT_STYLE["single"])
-    ax.legend(fontsize=7)
+        color = PHASE_COLOR.get(phase, "black")
+        label = PHASE_LABEL.get(phase, phase)
+        _line(ax, primary,   xcol, phase, color, label, **STYLE_PRIMARY)
+        _line(ax, secondary, xcol, phase, color, "_nolegend_", **STYLE_SECONDARY)
+
+    if scipy_df is not None:
+        _line(ax, scipy_df, xcol, "matrix_build", PHASE_COLOR["matrix_build"],
+              PHASE_LABEL["matrix_build"], **STYLE_SCIPY)
+    if bw_df is not None:
+        _line(ax, bw_df, xcol, "bw_db_setup", PHASE_COLOR["bw_db_setup"],
+              PHASE_LABEL["bw_db_setup"], **STYLE_BW)
+
+    leg = ax.legend(fontsize=7, loc="upper left", ncol=1, framealpha=0.8)
+    ax.add_artist(leg)
+    if secondary is not None:
+        _variant_legend(ax)
+
+
+def _panel_eval(ax, primary: pd.DataFrame | None, secondary: pd.DataFrame | None,
+                xcol: str, xlabel: str, title: str,
+                scipy_df: pd.DataFrame | None = None,
+                bw_df: pd.DataFrame | None = None,
+                phases=("eval_np", "eval_math")):
+    """Eval timing panel (bottom row)."""
+    _loglog_axis(ax, xlabel, "time (s)", title)
+
+    for phase in phases:
+        color = PHASE_COLOR.get(phase, "black")
+        label = PHASE_LABEL.get(phase, phase)
+        _line(ax, primary,   xcol, phase, color, label, **STYLE_PRIMARY)
+        _line(ax, secondary, xcol, phase, color, "_nolegend_", **STYLE_SECONDARY)
+
+    if scipy_df is not None:
+        _line(ax, scipy_df, xcol, "matrix_solve", PHASE_COLOR["matrix_solve"],
+              PHASE_LABEL["matrix_solve"], **STYLE_SCIPY)
+    if bw_df is not None:
+        _line(ax, bw_df, xcol, "bw_lci_solve", PHASE_COLOR["bw_lci_solve"],
+              PHASE_LABEL["bw_lci_solve"], **STYLE_BW)
+
+    leg = ax.legend(fontsize=7, loc="upper left", framealpha=0.8)
+    ax.add_artist(leg)
+    if secondary is not None:
+        _variant_legend(ax)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Plot flowprog benchmark results")
-    parser.add_argument("--ts", help="Timestamp of run to plot (default: most recent)")
-    parser.add_argument("--out", default=None, help="Output file path (default: show)")
+    parser.add_argument("--ts", help="Timestamp suffix of run to plot (default: most recent)")
+    parser.add_argument("--out", default=None, help="Output file path (default: show window)")
     args = parser.parse_args()
 
     print("Loading CSVs:")
-    chain  = _load("case_a_chain", args.ts)
-    fan    = _load("case_a_fan",   args.ts)
+    chain    = _load("case_a_chain", args.ts)
+    fan      = _load("case_a_fan",   args.ts)
     scipy_df = _load("case_a_scipy", args.ts)
-    bw_df  = _load("case_a_bw",    args.ts)
-    b_df   = _load("case_b",       args.ts)
+    bw_df    = _load("case_a_bw",    args.ts)
+    b_df     = _load("case_b",       args.ts)
 
     fig, axes = plt.subplots(
-        2, 2,
-        figsize=(13, 9),
+        3, 2,
+        figsize=(13, 12),
         constrained_layout=True,
     )
-    # Share x-axis within each column (counts top, timings bottom)
-    axes[0, 0].sharex(axes[1, 0])
-    axes[0, 1].sharex(axes[1, 1])
 
-    _plot_a_counts( axes[0, 0], chain, fan)
-    _plot_a_timings(axes[1, 0], chain, fan, scipy_df, bw_df)
-    _plot_b_counts( axes[0, 1], b_df)
-    _plot_b_timings(axes[1, 1], b_df)
+    # ── share x within each column ────────────────────────────────────────────
+    for row in range(1, 3):
+        axes[row, 0].sharex(axes[0, 0])
+        axes[row, 1].sharex(axes[0, 1])
 
-    # Hide redundant x-axis tick labels on the top row
-    for ax in axes[0, :]:
-        plt.setp(ax.get_xticklabels(), visible=False)
-        ax.set_xlabel("")
+    # ── share y across each row ───────────────────────────────────────────────
+    for col in range(2):
+        axes[0, col].sharey(axes[0, 1 - col])
+        axes[1, col].sharey(axes[1, 1 - col])
+        axes[2, col].sharey(axes[2, 1 - col])
+
+    # ── fill panels ───────────────────────────────────────────────────────────
+    _panel_counts(axes[0, 0], chain, fan,   xcol="n",
+                  title="Case (a) — expression structure")
+    _panel_counts(axes[0, 1], b_df,  None,  xcol="k",
+                  title="Case (b) — expression structure")
+
+    _panel_build(axes[1, 0], chain, fan, xcol="n",
+                 title="Case (a) — build / lambdify",
+                 scipy_df=scipy_df, bw_df=bw_df)
+    _panel_build(axes[1, 1], b_df, None, xcol="k",
+                 title="Case (b) — build / lambdify")
+
+    _panel_eval(axes[2, 0], chain, fan, xcol="n", xlabel="N (processes)",
+                title="Case (a) — eval",
+                scipy_df=scipy_df, bw_df=bw_df)
+    _panel_eval(axes[2, 1], b_df, None, xcol="k", xlabel="K (limit steps)",
+                title="Case (b) — eval",
+                phases=("eval_math",))
+
+    # ── hide x-tick labels on top two rows ───────────────────────────────────
+    for row in range(2):
+        for col in range(2):
+            plt.setp(axes[row, col].get_xticklabels(), visible=False)
+            axes[row, col].set_xlabel("")
+
+    # ── add linear reference lines after auto-scaling ─────────────────────────
+    # Force auto-scale so get_xlim/get_ylim return data-driven limits
+    fig.canvas.draw()
+    for ax in axes.flat:
+        if ax.lines:  # only panels that have data
+            _reference_line(ax, slope=1.0, label="linear")
 
     fig.suptitle("Flowprog benchmark results", fontsize=12, fontweight="bold")
 

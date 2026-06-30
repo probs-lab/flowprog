@@ -229,7 +229,7 @@ def main():
 
     fig, axes = plt.subplots(
         3, 2,
-        figsize=(13, 12),
+        figsize=(8, 10),
         constrained_layout=True,
     )
 

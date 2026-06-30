@@ -12,6 +12,8 @@ dependencies = [
     "sympy>=1.11.1",
     "pandas>=2.2.0",
     "doit>=0.37.0",
+    "brightway25>=1.1.1",
+    "scikit-umfpack>=0.4.2",
 ]
 
 [project.optional-dependencies]

@@ -11,9 +11,6 @@ authors = [
 dependencies = [
     "sympy>=1.11.1",
     "pandas>=2.2.0",
-    "doit>=0.37.0",
-    "brightway25>=1.1.1",
-    "scikit-umfpack>=0.4.2",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +18,11 @@ numpyro = [
     "jax>=0.4",
     "jaxlib>=0.4",
     "numpyro>=0.12",
+]
+benchmarks = [
+    "doit>=0.37.0",
+    "brightway25>=1.1.1",
+    "scikit-umfpack>=0.4.2",
 ]
 
 [dependency-groups]

@@ -21,3 +21,19 @@ processes).
 On the evaluable model, {py:meth}`SympyModel.to_elementary_flows` returns a
 `(exchange, process, metric, value)` table, similar to
 {py:meth}`SympyModel.to_flows`.
+
+## Boundary processes
+
+The `boundary_processes` module provides helpers for building complete process
+systems. This is optional: you can build the same thing explicitly by defining
+your own `ProductionOfX`, `ImportsOfX`, `ExportsOfX`, etc processes. But since
+those process definitions tend to be repetitive, these helpers can be useful. 
+
+It's relevant to elementary exchanges because these processes are often the
+place where cradle-to-gate / embodied emissions are linked into the model.
+
+```{eval-rst}
+.. automodule:: flowprog.boundary_processes
+    :members:
+```
+

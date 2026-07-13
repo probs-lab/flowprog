@@ -15,6 +15,9 @@
   faster for large models, and the resulting expressions can be resolved in one
   pass via `lambdify(expressions=...)` or `eval()`. `SympyModel.eval()` gains an
   `expand_intermediates` flag which works similarly.
+- **Boundary processes** (`flowprog.boundary_processes`): `Import`/`Export`/
+  `Source`/`Sink` specs provide a declarative way to define simple processes
+  that supply or consume specific objects, with associated elementary exchanges.
 
 ### Changed
 

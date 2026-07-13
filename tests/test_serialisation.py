@@ -395,7 +395,7 @@ class TestSaveLoadSteps:
             data = json.load(f)
 
         assert "steps" in data
-        assert data["version"] == "1.1"
+        assert data["version"] == "1.2"
         assert len(data["steps"]) == 1
 
 

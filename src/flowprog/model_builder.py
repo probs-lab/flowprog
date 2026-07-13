@@ -13,7 +13,7 @@ import sympy as sy
 from sympy import S
 import logging
 
-from .model_structure import Process, Object, ModelStructure
+from .model_structure import Process, Object, ElementaryExchange, ModelStructure
 from .activities import (
     AdditionalActivity,
     Limit,
@@ -40,15 +40,23 @@ class ModelBuilder:
 
     @classmethod
     def from_structure(cls, structure) -> "ModelBuilder":
-        return cls(structure.processes, structure.objects)
+        return cls(
+            structure.processes, structure.objects, structure.elementary_exchanges
+        )
 
-    def __init__(self, processes: list[Process], objects: list[Object]):
+    def __init__(
+        self,
+        processes: list[Process],
+        objects: list[Object],
+        elementary_exchanges: list[ElementaryExchange] = (),
+    ):
         """Initialize model builder.
 
         :param processes: List of processes in the model
         :param objects: List of objects in the model
+        :param elementary_exchanges: List of elementary exchanges declared for the model
         """
-        self.structure = ModelStructure(processes, objects)
+        self.structure = ModelStructure(processes, objects, elementary_exchanges)
 
         # Intermediate symbol counter (shared across all activities)
         self._intermediate_counter = sy.numbered_symbols()
@@ -90,12 +98,20 @@ class ModelBuilder:
         """Get U symbols from structure."""
         return self.structure.U
 
+    @property
+    def B(self):
+        """Get B (elementary exchange) symbols from structure."""
+        return self.structure.B
+
     # Delegate lookups and queries to structure
     def _lookup_process(self, process_id: str) -> int:
         return self.structure.lookup_process(process_id)
 
     def _lookup_object(self, object_id: str) -> int:
         return self.structure.lookup_object(object_id)
+
+    def _lookup_exchange(self, exchange_id: str) -> int:
+        return self.structure.lookup_exchange(exchange_id)
 
     def producers_of(self, object_id: str) -> list[str]:
         return self.structure.producers_of(object_id)
@@ -109,6 +125,7 @@ class ModelBuilder:
         *,
         process_id: Optional[str] = None,
         object_id: Optional[str] = None,
+        exchange_id: Optional[str] = None,
         limit_to_processes: Optional[Container[str]] = None,
     ) -> sy.Expr:
         """Build expression for role (delegates to structure)."""
@@ -116,6 +133,7 @@ class ModelBuilder:
             role,
             process_id=process_id,
             object_id=object_id,
+            exchange_id=exchange_id,
             limit_to_processes=limit_to_processes,
         )
 
@@ -536,6 +554,16 @@ class ModelBuilder:
         i = self._lookup_object(object_id)
         return self.structure.ConsumptionDeficit[i]
 
+    def elementary_balance(self, exchange_id: str) -> sy.Expr:
+        """Return structural symbol for the cumulative net flow of `exchange_id`.
+
+        Resolves to Sum_j B[e, j] * Y[j] against accumulated state. There is
+        deliberately no deficit counterpart: elementary exchanges never have a
+        producer to be in deficit against.
+        """
+        e = self._lookup_exchange(exchange_id)
+        return self.structure.ElementaryBalance[e]
+
     def limit(self, activity, expr, limit):
         """Apply a capacity limit transformation to an AdditionalActivity.
 
@@ -660,7 +688,7 @@ class ModelBuilder:
 
         # Build the data structure
         data = {
-            "version": "1.1",
+            "version": "1.2",
             "metadata": metadata or {},
             "saved_at": datetime.now().isoformat(),
             "processes": [
@@ -679,6 +707,13 @@ class ModelBuilder:
                     "has_market": o.has_market,
                 }
                 for o in self.objects
+            ],
+            "elementary_exchanges": [
+                {
+                    "id": e.id,
+                    "metric": str(e.metric),  # Convert URIRef to string
+                }
+                for e in self.structure.elementary_exchanges
             ],
             "steps": [serialize_step(step) for step in self._steps],
         }
@@ -714,7 +749,7 @@ class ModelBuilder:
             data = json.load(f)
 
         version = data.get("version", "1.0")
-        if version not in ("1.0", "1.1"):
+        if version not in ("1.0", "1.1", "1.2"):
             _log.warning(
                 f"Model file version {version} may not be compatible "
                 "with this version of flowprog"
@@ -740,8 +775,16 @@ class ModelBuilder:
             for o in data["objects"]
         ]
 
-        # Create the model (this creates X, Y, S, U which get cached by SymPy)
-        builder = cls(processes, objects)
+        elementary_exchanges = [
+            ElementaryExchange(
+                id=e["id"],
+                metric=URIRef(e["metric"]),  # Convert string back to URIRef
+            )
+            for e in data.get("elementary_exchanges", [])
+        ]
+
+        # Create the model (this creates X, Y, S, U, B which get cached by SymPy)
+        builder = cls(processes, objects, elementary_exchanges)
 
         # Prepare namespace for sympify - include the builder's IndexedBase objects
         # and structural query symbols so that deserialized expressions reference them
@@ -750,9 +793,11 @@ class ModelBuilder:
             "Y": builder.Y,
             "S": builder.S,
             "U": builder.U,
+            "B": builder.B,
             "Balance": builder.structure.Balance,
             "ProductionDeficit": builder.structure.ProductionDeficit,
             "ConsumptionDeficit": builder.structure.ConsumptionDeficit,
+            "ElementaryBalance": builder.structure.ElementaryBalance,
         }
 
         # Restore logical steps (v1.1+)

@@ -5,14 +5,14 @@ This is the default compiler used by ModelBuilder._compile().
 
 import hashlib
 import logging
-from typing import Optional, Union
+from typing import Container, Optional, Union
 from collections import defaultdict
 import sympy as sy
 import numpy as np
 import pandas as pd
 from rdflib import URIRef
 
-from ..model_structure import ModelStructure, Process, Object
+from ..model_structure import ModelStructure, Process, Object, ElementaryExchange
 from ..activities import AdditionalActivity, Limit, Floor
 
 _log = logging.getLogger(__name__)
@@ -142,27 +142,30 @@ class SympyModel:
         """Get U symbols from structure."""
         return self.structure.U
 
-    # def _lookup_process(self, process_id: str) -> int:
-    #     return self.structure.lookup_process(process_id)
+    @property
+    def B(self):
+        """Get B (elementary exchange) symbols from structure."""
+        return self.structure.B
 
-    # def _lookup_object(self, object_id: str) -> int:
-    #     return self.structure.lookup_object(object_id)
-
-    # def expr(
-    #     self,
-    #     role: str,
-    #     *,
-    #     process_id: Optional[str] = None,
-    #     object_id: Optional[str] = None,
-    #     limit_to_processes: Optional[Container[str]] = None,
-    # ) -> sy.Expr:
-    #     """Build expression for role (delegates to structure)."""
-    #     return self.structure.expr(
-    #         role,
-    #         process_id=process_id,
-    #         object_id=object_id,
-    #         limit_to_processes=limit_to_processes,
-    #     )
+    def expr(
+        self,
+        role: str,
+        *,
+        process_id: Optional[str] = None,
+        object_id: Optional[str] = None,
+        exchange_id: Optional[str] = None,
+        limit_to_processes: Optional[Container[str]] = None,
+    ) -> sy.Expr:
+        """Construct a symbolic expression for `role` (delegates to
+        `ModelStructure.expr()`).
+        """
+        return self.structure.expr(
+            role,
+            process_id=process_id,
+            object_id=object_id,
+            exchange_id=exchange_id,
+            limit_to_processes=limit_to_processes,
+        )
 
     # ========== Recipe Management ==========
 
@@ -204,7 +207,11 @@ class SympyModel:
                 proc_id = self.processes[j].id
 
                 if proc_id not in self._recipe_by_id:
-                    self._recipe_by_id[proc_id] = {"consumes": {}, "produces": {}}
+                    self._recipe_by_id[proc_id] = {
+                        "consumes": {},
+                        "produces": {},
+                        "exchanges": {},
+                    }
                 self._recipe_by_id[proc_id]["consumes"][obj_id] = value
 
             elif symbol.base == self.S:
@@ -213,8 +220,25 @@ class SympyModel:
                 proc_id = self.processes[j].id
 
                 if proc_id not in self._recipe_by_id:
-                    self._recipe_by_id[proc_id] = {"consumes": {}, "produces": {}}
+                    self._recipe_by_id[proc_id] = {
+                        "consumes": {},
+                        "produces": {},
+                        "exchanges": {},
+                    }
                 self._recipe_by_id[proc_id]["produces"][obj_id] = value
+
+            elif symbol.base == self.B:
+                e, j = symbol.indices
+                exchange_id = self.structure.elementary_exchanges[e].id
+                proc_id = self.processes[j].id
+
+                if proc_id not in self._recipe_by_id:
+                    self._recipe_by_id[proc_id] = {
+                        "consumes": {},
+                        "produces": {},
+                        "exchanges": {},
+                    }
+                self._recipe_by_id[proc_id]["exchanges"][exchange_id] = value
 
     def _set_recipe_from_ids(self, recipe_data):
         """Set recipe from ID-based format with validation."""
@@ -239,6 +263,10 @@ class SympyModel:
                         f"but process definition only lists: {process.produces}"
                     )
 
+            # Validate elementary exchanges are declared on the model
+            for exchange_id in recipe.get("exchanges", {}):
+                self.structure.lookup_exchange(exchange_id)
+
             # Store recipe
             self._recipe_by_id[proc_id] = recipe
 
@@ -246,14 +274,17 @@ class SympyModel:
         """Get full recipe for a process in human-readable format.
 
         :param process_id: Process identifier
-        :return: ``{"consumes": {obj_id: value}, "produces": {obj_id: value}}``
+        :return: ``{"consumes": {obj_id: value}, "produces": {obj_id: value},
+            "exchanges": {exchange_id: value}}``
         """
-        return self._recipe_by_id.get(process_id, {"consumes": {}, "produces": {}})
+        return self._recipe_by_id.get(
+            process_id, {"consumes": {}, "produces": {}, "exchanges": {}}
+        )
 
     def get_recipe_as_symbols(self) -> dict[sy.Indexed, Union[float, sy.Expr]]:
         """Get recipe data as symbol-based dict (cached for performance).
 
-        :return: ``{U[i, j]: value, S[i, j]: value, ...}``
+        :return: ``{U[i, j]: value, S[i, j]: value, B[e, j]: value, ...}``
         """
         if self._recipe_cache is None:
             self._recipe_cache = {}
@@ -269,9 +300,26 @@ class SympyModel:
                     i = self.structure.lookup_object(obj_id)
                     self._recipe_cache[self.S[i, j]] = value
 
+                for exchange_id, value in recipe.get("exchanges", {}).items():
+                    e = self.structure.lookup_exchange(exchange_id)
+                    self._recipe_cache[self.B[e, j]] = value
+
         return self._recipe_cache
 
     # ========== Evaluation Methods ==========
+
+    def _get_value(self, symbol: sy.Indexed) -> sy.Expr:
+        """Get the raw accumulated expression for a model state variable (X, Y).
+
+        This is a low-level accessor. The value is returned as-is, without
+        substituting structural placeholders, recipe symbols, or intermediate
+        variables.  Use `eval()` if you want those substituted.
+
+        :param symbol: X[j] or Y[j]
+        :return: Accumulated expression (recipe/intermediate symbols
+            un-substituted), or sy.S.Zero if never assigned
+        """
+        return self._values.get(symbol, sy.S.Zero)
 
     def eval_intermediates(self, expr: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows.
@@ -299,26 +347,63 @@ class SympyModel:
         ]
         return expr.subs(intermediates[::-1])
 
-    def eval(self, expr: sy.Expr, values=None):
-        """Evaluate an expression with given values (recipe automatically included).
+    def eval(self, expr: sy.Expr, values=None, expand_intermediates=True):
+        """Evaluate an expression against this model's accumulated state and recipe.
 
-        :param symbol: Symbol or Sympy expression to evaluate
-        :param values: Additional values to substitute
-        :return: Evaluated value
+        Structural symbols (X[j]/Y[j], Balance[i], the deficits,
+        ElementaryBalance[e], etc) are replaced by their accumulated
+        expressions, and recipe symbols are replaced by their (U/S/B) by their
+        values. Elementary exchanges B[e,j] with no recipe entry are assumed to
+        be zero and omitted from the result; recipe symbols S[i,j] and U[i,j] in
+        contrast are preserved if they have no value available to substitute,
+        since the structure of the system is known but the list of elementary
+        exchanges per process is not explicitly defined.
 
-        Structural symbols like X[j] and Deficit[i] are replaced by their
-        accumulated state values.
+        :param expr: Symbol or Sympy expression to evaluate.
+        :param values: Additional parameter values to substitute.
+        :param expand_intermediates: If True (default), expand the intermediate
+            placeholder symbols too, yielding a self-contained expression. If
+            False, leave them un-expanded. This is much faster for large models,
+            and likely what you want to use for manipulating intermediate
+            expressions which you will later pass to `lambdify()`. With
+            `expand_intermediates=False`, `values` are substituted only into the
+            visible expression (not within intermediate expressions), so
+            combining the two is unusual (the point of skipping expansion is to
+            keep expressions compact until a final `lambdify()`).
+        :return: Evaluated expression.
 
         """
-        # Resolve any structural symbols in the expression against final accumulated state
-        resolved_expr = self.structure.resolve_structural_symbols(expr, self._values)
-        result = self.eval_intermediates(resolved_expr, values)
-        # Substitute recipe values that may remain in the expression
-        # (e.g. S[i,j] or U[i,j] that appeared in accumulated values)
+        # Resolve any structural symbols against final accumulated state.
+        result = self.structure.resolve_structural_symbols(expr, self._values)
+        if expand_intermediates:
+            # Expands intermediates *and* substitutes recipe/values into them.
+            result = self.eval_intermediates(result, values)
         if isinstance(result, sy.Basic):
+            # Substitute recipe values that appeared directly (e.g. S[i,j]/
+            # U[i,j] from accumulated values, or B[e,j] from an
+            # elementary-flow expression). In the expanded case `values` were
+            # already applied by eval_intermediates above.
             recipe_syms = self.get_recipe_as_symbols()
             if recipe_syms:
                 result = result.xreplace(recipe_syms)
+            # Intermediates weren't expanded here, so `values` (which target
+            # intermediate definitions) weren't applied; substitute them into
+            # the visible expression -- a separate pass so a recipe value that
+            # is itself a parameter (e.g. B[e,j] -> EF_x -> number) chains.
+            if not expand_intermediates and values and isinstance(result, sy.Basic):
+                result = result.xreplace(values)
+            # xreplace() can collapse a bare Indexed expression (e.g.
+            # eval(S[i,j])) into a raw Python value when the whole expression
+            # matches a substitution key -- re-check before the sympy-only call.
+            if isinstance(result, sy.Basic):
+                # A B[e,j] left over here has no recipe entry for that
+                # (exchange, process) pair, which means process j simply has
+                # no such exchange -- implicitly zero.
+                remaining_B = {
+                    a: sy.S.Zero for a in result.atoms(sy.Indexed) if a.base == self.B
+                }
+                if remaining_B:
+                    result = result.xreplace(remaining_B)
         return result
 
     def to_flows(self, values=None, flow_ids=None):
@@ -386,6 +471,51 @@ class SympyModel:
             result["id"] = result.apply(flow_id, axis=1)
 
         return result
+
+    def to_elementary_flows(self, values=None, raw=False):
+        """Return a tidy table of elementary exchange flows (B[e,j] * Y[j]).
+
+        The result never includes unknown `B[e,j]` symbols: only (exchange,
+        process) where `B` values are known are included.
+
+        :param values: Additional parameter values to substitute.
+        :param raw: If True, each value is the raw accumulated Y expression
+            times the recipe B value, with intermediate placeholder symbols left
+            unresolved. This is much faster for large models (no per-row
+            `eval()`); resolve the expressions afterwards in one pass via
+            `lambdify(expressions=...)` or `eval()`. Cannot be combined with
+            `values`.
+        :return: DataFrame with columns exchange, process, metric, value
+
+        """
+
+        # FIXME: should `raw` here be the same as `expand_intermediates=False`?
+
+        if raw and values is not None:
+            raise ValueError("`values` cannot be combined with raw=True")
+        if values is None:
+            values = {}
+
+        rows = []
+        for proc_id, recipe in self._recipe_by_id.items():
+            j = self.structure.lookup_process(proc_id)
+            for exchange_id, b_value in recipe.get("exchanges", {}).items():
+                e = self.structure.lookup_exchange(exchange_id)
+                if raw:
+                    resolved = self._values[self.Y[j]] * sy.S(b_value)
+                else:
+                    expr = self._values[self.Y[j]] * self.B[e, j]
+                    resolved = self.eval(expr, values)
+                rows.append(
+                    (
+                        exchange_id,
+                        proc_id,
+                        self.structure.elementary_exchanges[e].metric,
+                        resolved,
+                    )
+                )
+
+        return pd.DataFrame(rows, columns=["exchange", "process", "metric", "value"])
 
     def lambdify(self, data=None, expressions: Optional[dict] = None, modules=None):
         """Return function to evaluate model.
@@ -505,7 +635,7 @@ class SympyModel:
 
         # Build the data structure
         data = {
-            "version": "1.0",
+            "version": "1.1",
             "metadata": metadata or {},
             "saved_at": datetime.now().isoformat(),
             "type": "SympyModel",
@@ -525,6 +655,13 @@ class SympyModel:
                     "has_market": o.has_market,
                 }
                 for o in self.objects
+            ],
+            "elementary_exchanges": [
+                {
+                    "id": e.id,
+                    "metric": str(e.metric),  # Convert URIRef to string
+                }
+                for e in self.structure.elementary_exchanges
             ],
             "values": {
                 sy.srepr(k): sy.srepr(v)
@@ -576,7 +713,7 @@ class SympyModel:
             data = json.load(f)
 
         # Check version compatibility
-        if data.get("version") != "1.0":
+        if data.get("version") not in ("1.0", "1.1"):
             _log.warning(
                 f"Model file version {data.get('version')} may not be compatible "
                 "with this version of flowprog"
@@ -608,8 +745,16 @@ class SympyModel:
             for o in data["objects"]
         ]
 
+        elementary_exchanges = [
+            ElementaryExchange(
+                id=e["id"],
+                metric=URIRef(e["metric"]),  # Convert string back to URIRef
+            )
+            for e in data.get("elementary_exchanges", [])
+        ]
+
         # Create structure
-        structure = ModelStructure(processes, objects)
+        structure = ModelStructure(processes, objects, elementary_exchanges)
 
         # Prepare namespace for sympify
         namespace = {
@@ -617,6 +762,8 @@ class SympyModel:
             "Y": structure.Y,
             "S": structure.S,
             "U": structure.U,
+            "B": structure.B,
+            "ElementaryBalance": structure.ElementaryBalance,
         }
 
         # Restore values

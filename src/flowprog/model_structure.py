@@ -52,6 +52,22 @@ class Object:
     has_market: bool = False
 
 
+@dataclass
+class ElementaryExchange:
+    """An ElementaryExchange represents a flow to or from the environment.
+
+    :param id: Identifier for the exchange, e.g. "CO2", "CH4", "GHG_upstream_CO2e".
+    :param metric: URI identifying the metric used to quantify this exchange.
+
+    There is no per-Process list of exchanges (unlike `produces`/`consumes` for
+    Objects); sparsity is implied by recipe data (the B matrix) instead.
+
+    """
+
+    id: str
+    metric: URIRef
+
+
 class ModelStructure:
     """Immutable model structure: processes, objects, symbols, and lookups.
 
@@ -59,22 +75,34 @@ class ModelStructure:
     during building or evaluation.
     """
 
-    def __init__(self, processes: list[Process], objects: list[Object]):
+    def __init__(
+        self,
+        processes: list[Process],
+        objects: list[Object],
+        elementary_exchanges: list[ElementaryExchange] = (),
+    ):
         """Initialize model structure.
 
         :param processes: List of processes in the model
         :param objects: List of objects (materials, products, energy) in the model
+        :param elementary_exchanges: List of elementary exchanges (flows to/from
+            the environment) declared for the model
         """
         # Store as tuples to emphasize immutability
         self.processes = tuple(processes)
         self.objects = tuple(objects)
+        self.elementary_exchanges = tuple(elementary_exchanges)
 
         M = len(processes)
         N = len(objects)
+        E = len(self.elementary_exchanges)
 
         # Build lookup indices
         self._obj_name_to_idx = {obj.id: i for i, obj in enumerate(objects)}
         self._process_name_to_idx = {proc.id: j for j, proc in enumerate(processes)}
+        self._exchange_name_to_idx = {
+            exc.id: e for e, exc in enumerate(self.elementary_exchanges)
+        }
 
         # Build process-object connectivity
         processes_producing_object: dict[int, list[int]] = {}
@@ -103,6 +131,10 @@ class ModelStructure:
         self.S = sy.IndexedBase("S", shape=(N, M), nonnegative=True)
         self.U = sy.IndexedBase("U", shape=(N, M), nonnegative=True)
 
+        # Elementary exchange coefficients: signed, no nonnegative assumption
+        # (LCA convention: positive = to environment, negative = from environment)
+        self.B = sy.IndexedBase("B", shape=(E, M))
+
         # Structural symbols for object-level queries (resolved by compiler)
         self.Balance = sy.IndexedBase("Balance", shape=(N,))
         self.ProductionDeficit = sy.IndexedBase(
@@ -111,6 +143,9 @@ class ModelStructure:
         self.ConsumptionDeficit = sy.IndexedBase(
             "ConsumptionDeficit", shape=(N,), nonnegative=True
         )
+
+        # Structural symbol for elementary-exchange queries (resolved by compiler).
+        self.ElementaryBalance = sy.IndexedBase("ElementaryBalance", shape=(E,))
 
     def __repr__(self):
         return f"ModelStructure(processes={len(self.processes)}, objects={len(self.objects)})"
@@ -136,6 +171,17 @@ class ModelStructure:
         if object_id in self._obj_name_to_idx:
             return self._obj_name_to_idx[object_id]
         raise ValueError(f"Unknown object id {object_id}")
+
+    def lookup_exchange(self, exchange_id: str) -> int:
+        """Get elementary exchange index from ID.
+
+        :param exchange_id: Elementary exchange identifier
+        :return: Exchange index
+        :raises ValueError: If exchange_id is unknown
+        """
+        if exchange_id in self._exchange_name_to_idx:
+            return self._exchange_name_to_idx[exchange_id]
+        raise ValueError(f"Unknown exchange id {exchange_id}")
 
     def producers_of(self, object_id: str) -> list[str]:
         """Get list of processes that produce an object.
@@ -165,13 +211,18 @@ class ModelStructure:
         *,
         process_id: Optional[str] = None,
         object_id: Optional[str] = None,
+        exchange_id: Optional[str] = None,
         limit_to_processes: Optional[Container[str]] = None,
     ) -> sy.Expr:
         """Build expression for a role (pure function, no state).
 
-        :param role: One of "ProcessOutput", "ProcessInput", "SoldProduction", "Consumption"
-        :param process_id: Process identifier (required for ProcessOutput/ProcessInput)
+        :param role: One of "ProcessOutput", "ProcessInput", "SoldProduction",
+            "Consumption", "ProcessElementaryFlow", "ElementaryFlows"
+        :param process_id: Process identifier (required for ProcessOutput/ProcessInput/
+            ProcessElementaryFlow)
         :param object_id: Object identifier
+        :param exchange_id: Elementary exchange identifier (required for
+            ProcessElementaryFlow/ElementaryFlows)
         :param limit_to_processes: Optional set of process IDs to limit to
         :return: Sympy expression for the role
         :raises ValueError: If role is unknown or required parameters missing
@@ -193,12 +244,15 @@ class ModelStructure:
             if limit_to_processes is not None:
                 pids = [j for j in pids if self.processes[j].id in limit_to_processes]
             return sum(  # type: ignore
-                self.expr(
-                    "ProcessOutput",
-                    process_id=self.processes[j].id,
-                    object_id=object_id,
-                )
-                for j in pids
+                (
+                    self.expr(
+                        "ProcessOutput",
+                        process_id=self.processes[j].id,
+                        object_id=object_id,
+                    )
+                    for j in pids
+                ),
+                sy.S.Zero,
             )
 
         elif role == "Consumption":
@@ -208,12 +262,38 @@ class ModelStructure:
             if limit_to_processes is not None:
                 pids = [j for j in pids if self.processes[j].id in limit_to_processes]
             return sum(  # type: ignore
-                self.expr(
-                    "ProcessInput",
-                    process_id=self.processes[j].id,
-                    object_id=object_id,
-                )
-                for j in pids
+                (
+                    self.expr(
+                        "ProcessInput",
+                        process_id=self.processes[j].id,
+                        object_id=object_id,
+                    )
+                    for j in pids
+                ),
+                sy.S.Zero,
+            )
+
+        elif role == "ProcessElementaryFlow":
+            assert exchange_id is not None and process_id is not None
+            e, j = self.lookup_exchange(exchange_id), self.lookup_process(process_id)
+            return self.B[e, j] * self.Y[j]
+
+        elif role == "ElementaryFlows":
+            assert exchange_id is not None
+            e = self.lookup_exchange(exchange_id)
+            pids = range(len(self.processes))
+            if limit_to_processes is not None:
+                pids = [j for j in pids if self.processes[j].id in limit_to_processes]
+            return sum(  # type: ignore
+                (
+                    self.expr(
+                        "ProcessElementaryFlow",
+                        exchange_id=exchange_id,
+                        process_id=self.processes[j].id,
+                    )
+                    for j in pids
+                ),
+                sy.S.Zero,
             )
 
         else:
@@ -238,11 +318,22 @@ class ModelStructure:
         )
         return flow_in - flow_out
 
+    def _compute_elementary_balance(self, exchange_id, values):
+        """Compute Sum_j B[e, j] * Y[j] for an exchange from accumulated values."""
+        e = self.lookup_exchange(exchange_id)
+        return sum(
+            (
+                self.B[e, j] * values.get(self.Y[j], sy.S.Zero)
+                for j in range(len(self.processes))
+            ),
+            sy.S.Zero,
+        )
+
     def resolve_structural_symbols(self, expr, values):
         """Substitute structural symbols in an expression with their current values.
 
-        Resolves: Balance[i], ProductionDeficit[i], ConsumptionDeficit[i], X[j],
-        Y[j]
+        Resolves: Balance[i], ProductionDeficit[i], ConsumptionDeficit[i],
+        ElementaryBalance[e], X[j], Y[j]
 
         """
         if not isinstance(expr, sy.Basic):
@@ -266,5 +357,9 @@ class ModelStructure:
                 obj_id = self.objects[idx].id
                 balance = self._compute_object_balance(obj_id, values)
                 subs[sym] = sy.Max(0, balance, evaluate=False)
+            elif sym.base == self.ElementaryBalance:
+                idx = sym.indices[0]
+                exchange_id = self.elementary_exchanges[idx].id
+                subs[sym] = self._compute_elementary_balance(exchange_id, values)
 
         return expr.xreplace(subs) if subs else expr

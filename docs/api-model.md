@@ -13,9 +13,16 @@ When complete, the model steps, optionally bundled with some fixed recipe data, 
 .. autoclass:: flowprog.Object
     :members:
 
+.. autoclass:: flowprog.ElementaryExchange
+    :members:
+
 .. autoclass:: flowprog.ModelStructure
     :members:
 ```
+
+Elementary exchanges (`CO2`, `CH4`, upstream `GHG_upstream_CO2e`-style aggregates, ...)
+represent flows to/from the environment, alongside the technosphere objects above --
+see {doc}`api-exchanges` for exchanges, boundary processes, reporting, and allocation.
 
 
 ## Model building

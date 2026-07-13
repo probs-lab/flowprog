@@ -33,7 +33,6 @@ def build():
     other_results = define_model(
         model_builder,
         recipe_data,
-        data["processes_with_elec_req"],
         data["processes_with_process_emissions"],
     )
     t2 = time.perf_counter()

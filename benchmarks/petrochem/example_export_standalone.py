@@ -65,9 +65,12 @@ def export_scenarios(levers):
 
 
 def export_process_groups(levers):
-    """Process id lists that load_model.define_model() derives from the lever
-    parameter declarations, needed by define_polymer_model() -- see its
-    `processes_with_elec_req` / `processes_with_direct_emissions` args.
+    """Process id lists derived from the lever parameter declarations.
+    `processes_with_elec_req` is needed by structure.build_structure() (to
+    add Electricity/ProcessHeat consumption to the right processes);
+    `processes_with_process_emissions` is needed by
+    model_polymers.define_polymer_model()'s `processes_with_direct_emissions`
+    arg.
     """
     processes_with_elec_req = [
         param.symbol[len("ElecReq_") :]

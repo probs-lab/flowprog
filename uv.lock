@@ -1315,15 +1315,17 @@ name = "flowprog"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "brightway25" },
-    { name = "doit" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "scikit-umfpack" },
     { name = "sympy" },
 ]
 
 [package.optional-dependencies]
+benchmarks = [
+    { name = "brightway25" },
+    { name = "doit" },
+    { name = "scikit-umfpack" },
+]
 numpyro = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "jax", version = "0.9.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1351,16 +1353,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "brightway25", specifier = ">=1.1.1" },
-    { name = "doit", specifier = ">=0.37.0" },
+    { name = "brightway25", marker = "extra == 'benchmarks'", specifier = ">=1.1.1" },
+    { name = "doit", marker = "extra == 'benchmarks'", specifier = ">=0.37.0" },
     { name = "jax", marker = "extra == 'numpyro'", specifier = ">=0.4" },
     { name = "jaxlib", marker = "extra == 'numpyro'", specifier = ">=0.4" },
     { name = "numpyro", marker = "extra == 'numpyro'", specifier = ">=0.12" },
     { name = "pandas", specifier = ">=2.2.0" },
-    { name = "scikit-umfpack", specifier = ">=0.4.2" },
+    { name = "scikit-umfpack", marker = "extra == 'benchmarks'", specifier = ">=0.4.2" },
     { name = "sympy", specifier = ">=1.11.1" },
 ]
-provides-extras = ["numpyro"]
+provides-extras = ["numpyro", "benchmarks"]
 
 [package.metadata.requires-dev]
 dev = [

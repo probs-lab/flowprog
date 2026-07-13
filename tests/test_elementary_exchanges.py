@@ -39,6 +39,30 @@ class TestDeclarationAndLookup:
         with pytest.raises(ValueError):
             builder.structure.lookup_exchange("N2O")
 
+    def test_process_declaring_unknown_exchange_raises(self):
+        processes = [
+            Process("P1", produces=["out"], consumes=[], exchanges=["N2O"])
+        ]
+        objects = [MObject("out")]
+        with pytest.raises(ValueError, match="N2O"):
+            ModelBuilder(processes, objects, [MExchange("CO2")])
+
+    def test_recipe_exchange_must_be_declared_id_format(self):
+        # B sparsity is structural: recipe values are only accepted for
+        # declared (exchange, process) cells, mirroring produces/consumes.
+        processes = [Process("P1", produces=["out"], consumes=[])]
+        objects = [MObject("out")]
+        builder = ModelBuilder(processes, objects, [MExchange("CO2")])
+        with pytest.raises(ValueError, match="only lists"):
+            builder.build({"P1": {"produces": {"out": 1.0}, "exchanges": {"CO2": 2.0}}})
+
+    def test_recipe_exchange_must_be_declared_symbol_format(self):
+        processes = [Process("P1", produces=["out"], consumes=[])]
+        objects = [MObject("out")]
+        builder = ModelBuilder(processes, objects, [MExchange("CO2")])
+        with pytest.raises(ValueError, match="only lists"):
+            builder.build({builder.S[0, 0]: 1.0, builder.B[0, 0]: 2.0})
+
     def test_no_exchanges_declared_by_default(self):
         processes = [Process("P1", produces=["out"], consumes=[])]
         objects = [MObject("out")]
@@ -83,8 +107,8 @@ class TestExprRoles:
     @pytest.fixture
     def m(self):
         processes = [
-            Process("P1", produces=["out"], consumes=[]),
-            Process("P2", produces=["out"], consumes=[]),
+            Process("P1", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("P2", produces=["out"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
@@ -94,9 +118,20 @@ class TestExprRoles:
         expr = m.expr("ProcessElementaryFlow", exchange_id="CO2", process_id="P1")
         assert expr == m.B[0, 0] * m.Y[0]
 
-    def test_elementary_flows_sums_all_processes(self, m):
+    def test_elementary_flows_sums_declaring_processes(self, m):
+        # Both P1 and P2 declare CO2, so both contribute.
         expr = m.expr("ElementaryFlows", exchange_id="CO2")
         assert expr == m.B[0, 0] * m.Y[0] + m.B[0, 1] * m.Y[1]
+
+    def test_elementary_flows_excludes_non_declaring_process(self):
+        # A process that does not declare the exchange contributes nothing.
+        processes = [
+            Process("P1", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("P2", produces=["out"], consumes=[]),
+        ]
+        m = ModelBuilder(processes, [MObject("out", has_market=True)], [MExchange("CO2")])
+        expr = m.expr("ElementaryFlows", exchange_id="CO2")
+        assert expr == m.B[0, 0] * m.Y[0]
 
     def test_elementary_flows_limit_to_processes(self, m):
         expr = m.expr(
@@ -112,8 +147,8 @@ class TestEvalUnexpanded:
 
     def _model(self):
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
-            Process("Clean", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
             Process("Consumer", produces=["product"], consumes=["out"])
         ]
         objects = [MObject("out", has_market=True), MObject("product")]
@@ -147,8 +182,8 @@ class TestEvalUnexpanded:
     def test_leaves_recipe_symbols_for_lambdify(self):
         """expand_intermediates=False substitutes raw accumulated Y[j] and
         recipe B[e,j] values but does not expand intermediates -- ready for a
-        single batched lambdify(), same contract as
-        to_elementary_flows(raw=True)."""
+        single batched lambdify(), same contract as the structural
+        elementary_flow_table()."""
         model = self._model()
         raw = model.eval(
             model.expr("ElementaryFlows", exchange_id="CO2"),
@@ -167,18 +202,18 @@ class TestEvalUnexpanded:
         func = model.lambdify(expressions={"total": raw})
         assert func({})["total"] == pytest.approx(-0.5 * 5)
 
-    def test_zeroes_sparse_B_entries(self):
-        """A process with no recipe entry for the requested exchange
-        contributes zero in the un-expanded path too, not a dangling B[e,j]
-        symbol (elementary-exchange sparsity is recipe-defined, unlike S/U)."""
+    def test_non_declaring_process_absent_from_flows(self):
+        """A process that does not declare the exchange contributes nothing
+        in the un-expanded path -- no dangling B[e,j] symbol (structural
+        sparsity, unlike a declared-but-unvalued cell which would persist)."""
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
             Process("Clean", produces=["out"], consumes=[]),
         ]
         objects = [MObject("out", has_market=True)]
         builder = ModelBuilder(processes, objects, [MExchange("CO2")])
         builder.add({builder.Y[0]: 10, builder.Y[1]: 5})
-        # Only "Dirty" has a CO2 exchange entry; "Clean" has none.
+        # Only "Dirty" declares CO2; "Clean" does not.
         model = builder.build(
             {
                 "Dirty": {"produces": {"out": 1.0}, "exchanges": {"CO2": 2.0}},
@@ -198,7 +233,9 @@ class TestEvalUnexpanded:
         """`values` may be combined with expand_intermediates=False: they are
         substituted into the visible expression, chaining through a recipe
         value that is itself a parameter (B[e,j] -> EF -> number)."""
-        processes = [Process("Dirty", produces=["out"], consumes=[])]
+        processes = [
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"])
+        ]
         objects = [MObject("out", has_market=True)]
         builder = ModelBuilder(processes, objects, [MExchange("CO2")])
         builder.add({builder.Y[0]: 10})
@@ -235,8 +272,8 @@ class TestElementaryBalance:
     def test_resolves_against_accumulated_Y(self):
         """ElementaryBalance[e] resolves to Sum_j B[e,j] * Y[j] against accumulated state."""
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
-            Process("Clean", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out", has_market=True)]
         builder = ModelBuilder(processes, objects, [MExchange("CO2")])
@@ -252,9 +289,9 @@ class TestElementaryBalance:
         resolved = model.eval(builder.elementary_balance("CO2"))
         assert resolved == pytest.approx(2.0 * 10 + -0.5 * 5)
 
-    def test_unset_B_entries_default_to_zero(self):
-        """Recipe sparsity: a (exchange, process) pair absent from the recipe
-        contributes zero, it does not stay as a free symbol."""
+    def test_undeclared_exchange_contributes_zero(self):
+        """A process that does not declare an exchange contributes nothing to
+        its balance -- the cell is structurally absent, not a free symbol."""
         processes = [Process("P1", produces=["out"], consumes=[])]
         objects = [MObject("out", has_market=True)]
         builder = ModelBuilder(processes, objects, [MExchange("CO2")])
@@ -265,6 +302,20 @@ class TestElementaryBalance:
         resolved = model.eval(builder.elementary_balance("CO2"))
         assert resolved == 0
 
+    def test_declared_but_unvalued_B_persists_as_symbol(self):
+        """A declared exchange with no recipe value persists as a symbol,
+        exactly like S/U -- it is not silently zeroed."""
+        processes = [Process("P1", produces=["out"], consumes=[], exchanges=["CO2"])]
+        objects = [MObject("out", has_market=True)]
+        builder = ModelBuilder(processes, objects, [MExchange("CO2")])
+
+        builder.add({builder.Y[0]: 10})
+        model = builder.build({"P1": {"produces": {"out": 1.0}}})
+
+        resolved = model.eval(builder.elementary_balance("CO2"))
+        # B[0, 0] has no recipe value, so 10 * B[0, 0] persists
+        assert resolved == 10 * builder.B[0, 0]
+
 
 class TestElementaryBalanceMidBuildLimit:
     """Demonstrate emissions appearing in a limit expression. Cumulative CO2
@@ -273,8 +324,8 @@ class TestElementaryBalanceMidBuildLimit:
 
     def _build(self):
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
-            Process("Clean", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
@@ -328,8 +379,8 @@ class TestRecipeData:
 
     def _builder(self):
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
-            Process("Clean", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
@@ -400,11 +451,16 @@ class TestRecipeData:
         assert model.eval(model.structure.ElementaryBalance[0]) == pytest.approx(-35.0)
 
 
-class TestToElementaryFlows:
+class TestElementaryFlowTable:
+    """The structural elementary-flow table lives on ModelStructure; resolve
+    it through the model with reporting.evaluate_views."""
+
     def test_tidy_table(self):
+        from flowprog.reporting import evaluate_views
+
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
-            Process("Clean", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
@@ -417,28 +473,27 @@ class TestToElementaryFlows:
             }
         )
 
-        table = model.to_elementary_flows()
+        table = evaluate_views(model, model.structure.elementary_flow_table())
         rows = {
             (row.exchange, row.process): row.value for row in table.itertuples()
         }
         assert rows[("CO2", "Dirty")] == pytest.approx(20.0)
         assert rows[("CO2", "Clean")] == pytest.approx(-2.5)
 
-    def test_empty_when_no_exchanges_in_recipe(self):
+    def test_empty_when_no_exchanges_declared(self):
         processes = [Process("P1", produces=["out"], consumes=[])]
         objects = [MObject("out")]
         builder = ModelBuilder(processes, objects, [MExchange("CO2")])
         builder.add({builder.Y[0]: 10})
         model = builder.build({"P1": {"produces": {"out": 1.0}}})
 
-        table = model.to_elementary_flows()
-        assert len(table) == 0
+        assert len(model.structure.elementary_flow_table()) == 0
 
 
 class TestLambdifyElementaryTotals:
     def test_lambdify_expressions_with_elementary_balance(self):
         processes = [
-            Process("Dirty", produces=["out"], consumes=[]),
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
@@ -451,13 +506,11 @@ class TestLambdifyElementaryTotals:
             }
         )
 
-        # Users are expected to resolve structural symbols via eval() before
-        # building the expressions dict passed to lambdify (matching how
-        # existing model code already does this for Balance/Deficit).
-        #
-        # FIXME: maybe lambdify should do this?
-        total_co2 = model.eval(model.structure.ElementaryBalance[0])
-        func = model.lambdify(expressions={"total_co2": total_co2})
+        # lambdify() resolves structural symbols itself, so the structural
+        # expression can be compiled directly -- no eval() pass needed first.
+        func = model.lambdify(
+            expressions={"total_co2": model.structure.ElementaryBalance[0]}
+        )
         result = func({"demand": 100})
         # pull_production("out", demand) sets Y[0] = demand / S[out, Dirty]
         assert result["total_co2"] == pytest.approx(100.0 / 0.6 * 2.0)
@@ -480,7 +533,9 @@ class TestSerialisation:
         assert loaded.structure.B.shape == builder.structure.B.shape
 
     def test_model_roundtrip_preserves_B_recipe(self, tmp_path):
-        processes = [Process("Dirty", produces=["out"], consumes=[])]
+        processes = [
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"])
+        ]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
         builder = ModelBuilder(processes, objects, exchanges)

@@ -3,9 +3,12 @@
 Alongside the technosphere `S`/`U` matrices described in {doc}`api-model`,
 `flowprog` supports **elementary exchanges**: flows to/from the environment
 (CO2, CH4, upstream burdens, ...), represented by the `B` matrix. These are
-one-sided flows between a process and the environment, declared via
-{py:class}`flowprog.ElementaryExchange` and set as recipe data alongside `S` and
-`U` (see {py:meth}`SympyModel.set_recipe`, {py:meth}`ModelBuilder.build`).
+one-sided flows between a process and the environment. The exchange *types* are
+declared via {py:class}`flowprog.ElementaryExchange`; which processes can have
+which exchanges is declared per-process (`Process.exchanges`, mirroring
+`produces`/`consumes` for `S`/`U`). Values for exchange coefficients are set as
+recipe data alongside `S` and `U` (see {py:meth}`SympyModel.set_recipe`,
+{py:meth}`ModelBuilder.build`.
 
 ## Elementary exchange queries
 

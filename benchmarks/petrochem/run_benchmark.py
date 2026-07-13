@@ -66,6 +66,34 @@ def get_model_output(func, params):
     }
 
 
+MATCH_PREVIOUS_ZERO_KEYS = [
+    # These were previously wrong, since the throughputs were calculated in the
+    # plastics model before fertilisers were added. In the updated code, the
+    # value of these metrics is structural and resolved at the end.
+    "ProcessThroughput_ProductionOfAmmoniaFertiliser",
+    "ProcessThroughput_ProductionOfAmmoniumNitrate",
+    "ProcessThroughput_ProductionOfAmmoniumPhosphate",
+    "ProcessThroughput_ProductionOfAmmoniumSulphate",
+    "ProcessThroughput_ProductionOfCalciumAmmoniumNitrate",
+    "ProcessThroughput_ProductionOfNKCompound",
+    "ProcessThroughput_ProductionOfNPKCompound",
+    "ProcessThroughput_ProductionOfOtherFertiliserNP",
+    "ProcessThroughput_ProductionOfOtherFertiliserN",
+    "ProcessThroughput_ProductionOfUrea",
+    "ProcessThroughput_ProductionOfUreaAmmoniumNitrate",
+    "ProcessThroughput_UseOfAmmoniaFertiliser",
+    "ProcessThroughput_UseOfAmmoniumNitrateFertiliser",
+    "ProcessThroughput_UseOfAmmoniumPhosphateFertiliser",
+    "ProcessThroughput_UseOfAmmoniumSulphateFertiliser",
+    "ProcessThroughput_UseOfCalciumAmmoniumNitrateFertiliser",
+    "ProcessThroughput_UseOfNKCompoundFertiliser",
+    "ProcessThroughput_UseOfNPKCompoundFertiliser",
+    "ProcessThroughput_UseOfOtherFertiliserNP",
+    "ProcessThroughput_UseOfOtherFertiliserN",
+    "ProcessThroughput_UseOfUreaFertiliser",
+    "ProcessThroughput_UseOfUreaAmmoniumNitrateFertiliser",
+]
+
 def verify(data, func):
     n_checked = 0
     n_failed = 0
@@ -73,6 +101,10 @@ def verify(data, func):
     for name, case in data["scenarios"].items():
         expected = case["results"]
         actual = get_model_output(func, case["params"])
+
+        for k in MATCH_PREVIOUS_ZERO_KEYS:
+            if k in actual:
+                actual[k] = 0
 
         if set(expected) != set(actual):
             n_failed += 1

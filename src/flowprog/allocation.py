@@ -422,14 +422,13 @@ class PassThrough:
     """Reattribute pass-through processes' burdens to their direct consumers.
 
     Conceptually this is allocation with a limited propagation frontier: the
-    processes in `pass_through` are treated as *conduits* rather than
-    reporting categories, and their elementary-exchange burdens are pushed
-    forward to the processes consuming their output, in proportion to
+    processes in `pass_through` are treated as transient rather than reporting
+    categories in their own right, and their elementary-exchange burdens are
+    pushed forward to the processes consuming their output, in proportion to
     consumption. Every process outside the set keeps its own burden. Since
-    burden is moved exactly once (never copied), any grouping over the
-    reattributed table still partitions the system total -- the property that
-    makes per-stage contribution analyses (e.g. GHG Protocol scope-2-style
-    attribution of purchased electricity/heat) correct.
+    burden is moved exactly once, any grouping over the reattributed table still
+    partitions the system total. This is similar to GHG Protocol scope-2-style
+    attribution of purchased electricity/heat to the processes that use them.
 
     **Currently implemented:** the closed-form degenerate case, where every
     pass-through process has no technosphere inputs, exactly one output, and
@@ -440,8 +439,7 @@ class PassThrough:
     symbolic, division-free in the unit-S case, and stays on the model's
     lambdify-once fast path (and remains compilable to standalone code).
 
-    **Not yet implemented** (each raises `NotImplementedError`, and the API
-    is shaped so they can be added without breaking changes):
+    **Not yet implemented**:
 
     - multi-output pass-through processes, which need an allocation `rule`
       to split their burden among co-products;
@@ -451,38 +449,48 @@ class PassThrough:
       forward-substitution solve over the pass-through set (acyclic case)
       or closed-form small-cycle solves.
 
-    Consumption is keyed to input activity ``X[j] * U[i, j]``, consistent
-    with the market balance (`ModelStructure._compute_object_balance`); for
-    memoryless processes X == Y. Totals per exchange are preserved exactly
-    iff each pass-through object's market balances -- check `residuals()`.
+    Consumption is keyed to input activity ``X[j] * U[i, j]``. Totals per
+    exchange are preserved exactly iff each pass-through object's market
+    balances -- check `residuals()`.
 
-    :param model: A built, evaluable model (e.g. SympyModel) with recipe
-        data set (recipe values, not bare symbols, are placed in the output).
+    The allocation depends only on the model *structure*: every output value is
+    a purely structural symbolic expression (``X[j]``, ``U[i,j]``, ``B[e,s]``,
+    ``S[i,s]``), resolved later when the model is evaluated.
+
+    :param structure: A `ModelStructure`.
     :param pass_through: Iterable of process ids to reattribute.
     :param rule: Reserved for multi-output pass-through processes; must be
         None for now.
 
+    Reporting composes with this by table substitution: `elementary_flows()`
+    has the same shape as ``structure.elementary_flow_table()``, so pass it
+    to `flowprog.reporting.Report.elementary_flows` and report exactly as for
+    an unmodified model.
+
     **Example**::
 
-        pt = PassThrough(model, ["SourceOfElectricity", "SourceOfProcessHeat"])
-        rep = Reporting(model, groupings={"stage": stages}, pass_through=pt)
-        rep.aggregate(None, by=("stage", "exchange"))
+        from flowprog.reporting import Report
+
+        pt = PassThrough(model.structure, ["SourceOfElectricity", "SourceOfProcessHeat"])
+        rep = Report.elementary_flows(model.structure, pt.elementary_flows())
+        rep.with_group("stage", stages, on="process").by("stage", "exchange")
+
     """
 
-    def __init__(self, model, pass_through, rule=None):
+    def __init__(self, structure, pass_through, rule=None):
         if rule is not None:
             raise NotImplementedError(
                 "Allocation rules for multi-output pass-through processes are "
                 "not yet implemented; `rule` must be None."
             )
-        self.model = model
+        self.structure = structure
         self.pass_through = list(dict.fromkeys(pass_through))
         self._plan = self._validate()
 
     def _validate(self):
         """Check every pass-through process is in the supported closed-form
         case, returning [(process_id, object_id, consumer_ids)]."""
-        structure = self.model.structure
+        structure = self.structure
         plan = []
         for pid in self.pass_through:
             j = structure.lookup_process(pid)  # raises ValueError if unknown
@@ -515,66 +523,55 @@ class PassThrough:
                     "weighting, not yet implemented."
                 )
 
-            recipe = self.model.get_recipe(pid)
-            if object_id not in recipe.get("produces", {}):
-                raise ValueError(
-                    f"Pass-through process {pid!r} has no recipe value for "
-                    f"its output {object_id!r}; set recipe data on the model "
-                    "before constructing PassThrough."
-                )
-
             consumers = structure.consumers_of(object_id)
-            for q in consumers:
-                if object_id not in self.model.get_recipe(q).get("consumes", {}):
-                    raise ValueError(
-                        f"Process {q!r} consumes {object_id!r} but has no "
-                        "recipe value for it; set recipe data on the model "
-                        "before constructing PassThrough."
-                    )
-
             plan.append((pid, object_id, consumers))
         return plan
 
     def _intensities(self, pid, object_id):
         """{exchange_id: burden per unit of `object_id` supplied} for one
-        pass-through process (closed form: B value / S value)."""
-        recipe = self.model.get_recipe(pid)
-        s_value = sy.S(recipe["produces"][object_id])
+        pass-through process (closed form: ``B[e,s] / S[i,s]``, symbolic).
+
+        Iterates the process's declared exchanges (`Process.exchanges`); a
+        declared exchange with no recipe value simply resolves to zero
+        burden per unit at evaluation time.
+        """
+        structure = self.structure
+        s = structure.lookup_process(pid)
+        i = structure.lookup_object(object_id)
         return {
-            exchange_id: sy.S(b_value) / s_value
-            for exchange_id, b_value in recipe.get("exchanges", {}).items()
+            exchange_id: structure.B[structure.lookup_exchange(exchange_id), s]
+            / structure.S[i, s]
+            for exchange_id in structure.processes[s].exchanges
         }
 
     def elementary_flows(self) -> pd.DataFrame:
-        """Reattributed elementary-flow table (raw symbolic values).
+        """Reattributed elementary-flow table (structural symbolic values).
 
-        Same shape as ``model.to_elementary_flows(raw=True)`` plus a ``via``
+        Same shape as ``structure.elementary_flow_table()`` plus a ``via``
         column, except that each pass-through process's rows are replaced by
         one row per (exchange, consumer): ``X[j]*U[i,j] * B[e,s]/S[i,s]``,
         with ``via`` naming the pass-through process the burden was received
-        through (NA on processes' own direct rows). Values are raw
-        expressions (recipe values substituted, intermediate placeholders
-        unresolved), ready for ``lambdify(expressions=...)`` or ``eval()``.
+        through (NA on processes' own direct rows). Every value is a purely
+        structural symbolic expression, ready for
+        ``lambdify(expressions=...)``, ``eval()``, or a forward-run state.
         """
-        structure = self.model.structure
+        structure = self.structure
         pass_through_ids = {pid for pid, _, _ in self._plan}
 
-        table = self.model.to_elementary_flows(raw=True)
+        table = structure.elementary_flow_table()
         table = table[~table["process"].isin(pass_through_ids)].copy()
         table["via"] = pd.NA
 
         rows = []
         for pid, object_id, consumers in self._plan:
+            i = structure.lookup_object(object_id)
             intensities = self._intensities(pid, object_id)
             for exchange_id, intensity in intensities.items():
                 e = structure.lookup_exchange(exchange_id)
                 metric = structure.elementary_exchanges[e].metric
                 for q in consumers:
                     jq = structure.lookup_process(q)
-                    u_value = sy.S(self.model.get_recipe(q)["consumes"][object_id])
-                    value = (
-                        self.model._get_value(self.model.X[jq]) * u_value * intensity
-                    )
+                    value = structure.X[jq] * structure.U[i, jq] * intensity
                     rows.append((exchange_id, q, metric, value, pid))
 
         received = pd.DataFrame(
@@ -592,18 +589,16 @@ class PassThrough:
         `elementary_flows()` -- evaluate this table in tests to confirm the
         reattribution is exact.
         """
+        structure = self.structure
         rows = []
         for pid, object_id, consumers in self._plan:
-            js = self.model.structure.lookup_process(pid)
-            s_value = sy.S(self.model.get_recipe(pid)["produces"][object_id])
-            supplied = self.model._get_value(self.model.Y[js]) * s_value
+            js = structure.lookup_process(pid)
+            i = structure.lookup_object(object_id)
+            supplied = structure.Y[js] * structure.S[i, js]
             consumed = sum(
                 (
-                    self.model._get_value(
-                        self.model.X[self.model.structure.lookup_process(q)]
-                    )
-                    * sy.S(self.model.get_recipe(q)["consumes"][object_id])
-                    for q in consumers
+                    structure.X[jq] * structure.U[i, jq]
+                    for jq in (structure.lookup_process(q) for q in consumers)
                 ),
                 sy.S.Zero,
             )

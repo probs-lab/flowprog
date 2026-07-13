@@ -1,7 +1,7 @@
 import sympy as sy
 from flowprog import merge_activities
 from flowprog.allocation import PassThrough
-from flowprog.reporting import Reporting
+from flowprog.reporting import Grouping, Report
 
 from utils import (
     def_scalar_param,
@@ -976,18 +976,15 @@ RECYCLED_POLYMERS = {
     "FibrePPA",
 }
 
-# Emissions "source" categories, as a grouping over elementary-exchange ids
-# (Reporting infers the exchange axis from these being exchange ids).
-# CO2_captured is parked in "other": it is a CCS *diagnostic*, not a GWP
-# source (see calc_emissions()'s CCS total), and GWP_ALL characterises it to
-# zero. The explicit "other" marks the remainder as intentional, so
-# Grouping.build stays quiet (see reporting.Grouping.build).
+# Emissions "source" categories, as a grouping over elementary-exchange ids.
+# CO2_captured is placed in "other" -- it is a CCS diagnostic, not a GWP source
+# (see calc_emissions()'s CCS total), and GWP_ALL characterises it to zero.
 EMISSIONS_SOURCE_GROUPING = {
     "Elec": {ELECTRICITY_EXCHANGE_ID},
     "NGCombustion": {PROCESS_HEAT_COMBUSTION_EXCHANGE_ID},
     "NGWTT": {PROCESS_HEAT_WTT_EXCHANGE_ID},
     "Feedstock": {FEEDSTOCK_EXCHANGE_ID},
-    "Direct": set(GWP),  # speciated direct process emissions CO2/CH4/N2O
+    "Direct": set(GWP),  # direct process emissions CO2/CH4/N2O
     "other": {CAPTURED_CO2_EXCHANGE_ID},
 }
 
@@ -1004,15 +1001,11 @@ GWP_ALL = {
 }
 
 # Feedstock supplying processes grouped by emissions-reporting group, from the
-# FEEDSTOCKS table (structure.py). The empty "other" silently absorbs every
-# non-feedstock process (see reporting.Grouping.build).
+# FEEDSTOCKS table (structure.py).
 FEEDSTOCK_GROUPS = list(dict.fromkeys(f.group for f in FEEDSTOCKS))
 FEEDSTOCK_GROUPING = {
-    **{
-        group: {f.process_id for f in FEEDSTOCKS if f.group == group}
-        for group in FEEDSTOCK_GROUPS
-    },
-    "other": set(),
+    group: {f.process_id for f in FEEDSTOCKS if f.group == group}
+    for group in FEEDSTOCK_GROUPS
 }
 
 
@@ -1058,12 +1051,20 @@ def add_direct_emission_and_feedstock_exchanges(
     - Feedstock emissions for objects with an explicit supplying process
       already in the model (Naphtha/Ethane/Propane/Butane via OilRefining*).
 
-    Mutates `recipe_data` in place (symbol-keyed format, matching the rest of
-    `structure.py`'s recipe_data). Must be called before `model.build(recipe_data)`.
+    Mutates `recipe_data` in place, and declares the exchanges on the affected
+    processes. Must be called before `model.build(recipe_data)`.
+
     """
+
+    def declare(process, exchange_ids):
+        process.exchanges.extend(
+            e for e in exchange_ids if e not in process.exchanges
+        )
+
     e_captured = model.structure.lookup_exchange(CAPTURED_CO2_EXCHANGE_ID)
     for process_id in processes_with_direct_emissions:
         j = model._lookup_process(process_id)
+        declare(model.processes[j], [*GWP, CAPTURED_CO2_EXCHANGE_ID])
         abatement = abatement_for_process(process_id)
         captured = 1 - abatement
         # Units: DirProcEmis_* is t_GHG/t_product; results are reported
@@ -1076,9 +1077,7 @@ def add_direct_emission_and_feedstock_exchanges(
         # CO2_captured sums the CO2/CH4/N2O *masses* (t) unweighted into one
         # "captured" quantity -- physically odd (it books captured N2O at mass
         # parity with CO2), but this faithfully reproduces the legacy CCS
-        # definition, which was likewise GWP-unweighted. Inherited behaviour,
-        # not a choice this migration defends; the `CCS` result reads this one
-        # exchange back (calc_emissions()).
+        # definition, which was likewise GWP-unweighted. Inherited behaviour.
         recipe_data[model.B[e_captured, j]] = 1000 * captured * sum(
             sy.Symbol(f"DirProcEmis_{ghg}_{process_id}") for ghg in GWP
         )
@@ -1087,56 +1086,59 @@ def add_direct_emission_and_feedstock_exchanges(
     for process_id, object_id in FEEDSTOCK_PROCESS_OBJECTS.items():
         j = model._lookup_process(process_id)
         assert object_id in model.processes[j].produces
+        declare(model.processes[j], [FEEDSTOCK_EXCHANGE_ID])
         recipe_data[model.B[e_feedstock, j]] = sy.Symbol(f"EF_Feedstock_{object_id}")
 
 
-def calc_flow_summaries(compiled, reporting):
+def calc_flow_summaries(structure):
     """Calculate summary metrics based on mass flows."""
 
     results = {}
 
     # Total polymer production, split by route: virgin (PolymerisationOf*) vs
-    # recycled (MechanicalRecyclingOf*AtEOL). Each is a production() sum
-    # limited to the one producing process, mirroring the feedstock reads.
+    # recycled (MechanicalRecyclingOf*AtEOL). Each is a Report.production()
+    # total filtered to the one producing process, mirroring the feedstock
+    # reads.
     results["Production_polymers_virgin"] = sum(
-        reporting.production(polymer, limit_to_processes=[process], raw=True)
+        Report.production(structure, polymer).filter(process=process).total()
         for polymer, process in zip(polymer_objects, polymerisation_processes)
     )
     results["Production_polymers_recycled"] = sum(
-        reporting.production(
-            polymer,
-            limit_to_processes=[f"MechanicalRecyclingOf{polymer}AtEOL"],
-            raw=True,
-        )
+        Report.production(structure, polymer)
+        .filter(process=f"MechanicalRecyclingOf{polymer}AtEOL")
+        .total()
         for polymer in polymer_objects
         if polymer in RECYCLED_POLYMERS
     )
 
     # Process capacity for every process: its Max(input, output) activity.
-    # (Reporting has no throughput concept -- this is a plain model quantity.)
-    for j, p in enumerate(compiled.processes):
-        results[f"ProcessThroughput_{p.id}"] = compiled.eval(
-            sy.Max(compiled.X[j], compiled.Y[j]), expand_intermediates=False
-        )
+    for j, p in enumerate(structure.processes):
+        results[f"ProcessThroughput_{p.id}"] = sy.Max(structure.X[j], structure.Y[j])
 
     return results
 
 
-def calc_utility_requirements(reporting):
+def calc_utility_requirements(structure, stage_grouping):
     """Utility (electricity/process-heat) requirements by lifecycle stage.
 
     The technosphere analogue of the elementary-flow aggregation:
     ElecReq_{stage}/NGReq_{stage} are a group-by over Electricity/
     LowCarbonElectricity/ProcessHeat consumption, reading straight off the
     U[i,j] entries structure.py already populated (the ElecReq_{process_id}/
-    NGReq_{process_id} symbols) via Reporting.consumption() instead of
+    NGReq_{process_id} symbols) via Report.consumption() instead of
     re-deriving those symbol names by hand.
     """
-    elec = reporting.consumption("Electricity", by="stage", raw=True)
-    low_carbon_elec = reporting.consumption(
-        "LowCarbonElectricity", by="stage", raw=True
-    )
-    heat = reporting.consumption("ProcessHeat", by="stage", raw=True)
+
+    def consumption_by_stage(object_id):
+        return (
+            Report.consumption(structure, object_id)
+            .with_group("stage", stage_grouping, on="process")
+            .by("stage")
+        )
+
+    elec = consumption_by_stage("Electricity")
+    low_carbon_elec = consumption_by_stage("LowCarbonElectricity")
+    heat = consumption_by_stage("ProcessHeat")
 
     other_results = {}
     for stage in STAGES:
@@ -1153,32 +1155,44 @@ def calc_utility_requirements(reporting):
     return other_results
 
 
-def calc_emissions(reporting):
-    """All emissions results, as pure Reporting aggregations over the
-    (utility-reattributed) elementary-flow table -- no direct model access.
+def calc_emissions(structure, stage_grouping):
+    """All emissions results, as views over `flows` -- the grouped Report on
+    the (utility-reattributed) elementary-flow table.
 
     Two stage pivots do most of the work. Both run over the same reattributed
-    flows: `reporting`'s PassThrough moves each utility Source's burden
-    (Electricity/LowCarbonElectricity/ProcessHeat) onto its consuming
-    processes -- so it lands in the consumer's stage, not the Source's --
-    while direct-emission and feedstock burdens sit producer-side and stay
-    put. Green hydrogen needs no special case: it consumes LowCarbonElectricity
-    (its own object/Source), so its low-carbon EF is routed structurally.
+    flows: `flows` wraps PassThrough's table, which moves each utility
+    Source's burden (Electricity/LowCarbonElectricity/ProcessHeat) onto its
+    consuming processes -- so it lands in the consumer's stage, not the
+    Source's -- while direct-emission and feedstock burdens sit producer-side
+    and stay put. Green hydrogen needs no special case: it consumes
+    LowCarbonElectricity (its own object/Source), so its low-carbon EF is
+    routed structurally.
 
-    - `by_stage_exchange` (uncharacterised): the per-gas direct emissions and
-      the CO2_captured diagnostic, which GWP_ALL deliberately drops.
+    - `by_stage_exchange` (uncharacterised -- fine, since "exchange" is one
+      of the group keys): the per-gas direct emissions and the CO2_captured
+      diagnostic, which GWP_ALL deliberately drops.
     - `by_stage_source` (GWP_ALL-characterised, exchanges collapsed to source
       categories): every kgCO2e source figure, with CO2/CH4/N2O rolled into
       one "Direct" column. EmissionsBySource_* are its column sums and
       EmissionsByStage_* its row sums -- no prefix-scanning a results dict.
     """
+
     results = {}
 
-    by_stage_exchange = dict(
-        reporting.aggregate(None, by=("stage", "exchange"), raw=True).items()
+    process_ids = [p.id for p in structure.processes]
+    feedstock_grouping = Grouping.complete(FEEDSTOCK_GROUPING, process_ids)
+
+    pass_through = PassThrough(structure, UTILITY_SOURCE_PROCESSES)
+    flows = (
+        Report.elementary_flows(structure, pass_through.elementary_flows())
+        .with_group("stage", stage_grouping, on="process")
+        .with_group("feedstock_group", feedstock_grouping, on="process")
+        .with_group("source", EMISSIONS_SOURCE_GROUPING, on="exchange")
     )
-    by_stage_source = dict(
-        reporting.aggregate("GWPall", by=("stage", "source"), raw=True).items()
+
+    by_stage_exchange = flows.by("stage", "exchange").to_dict()
+    by_stage_source = (
+        flows.characterise(GWP_ALL, name="GWPall").by("stage", "source").to_dict()
     )
 
     def stage_exchange(stage, exchange_id):
@@ -1236,24 +1250,21 @@ def calc_emissions(reporting):
     # so these read straight off GHG_upstream_Feedstock:
     #  - per group, from the feedstock_group x exchange pivot;
     #  - per object, from the process x exchange pivot (one process each);
-    #  - FeedstockInput from production() -- limit_to_processes is load-bearing:
-    #    Naphtha is co-produced by chemical recycling, which is not fossil
-    #    feedstock input. (production() == Y[j] here as every supplying S is 1.)
-    feedstock_by_group = dict(
-        reporting.aggregate(
-            None, by=("feedstock_group", "exchange"), raw=True
-        ).items()
-    )
-    feedstock_by_process = dict(
-        reporting.aggregate(None, by=("process", "exchange"), raw=True).items()
-    )
+    #  - FeedstockInput from Report.production() -- the process filter is
+    #    load-bearing: Naphtha is co-produced by chemical recycling, which is
+    #    not fossil feedstock input. (production() == Y[j] here as every
+    #    supplying S is 1.)
+    feedstock_by_group = flows.by("feedstock_group", "exchange").to_dict()
+    feedstock_by_process = flows.by("process", "exchange").to_dict()
     for group in FEEDSTOCK_GROUPS:
         results[f"Emissions_Feedstock_{group}"] = feedstock_by_group.get(
             (group, FEEDSTOCK_EXCHANGE_ID), sy.S.Zero
         )
     for f in FEEDSTOCKS:
-        results[f"FeedstockInput_{f.object_id}"] = reporting.production(
-            f.object_id, limit_to_processes=[f.process_id], raw=True
+        results[f"FeedstockInput_{f.object_id}"] = (
+            Report.production(structure, f.object_id)
+            .filter(process=f.process_id)
+            .total()
         )
         results[f"FeedstockEmissionsByObject_{f.object_id}"] = feedstock_by_process.get(
             (f.process_id, FEEDSTOCK_EXCHANGE_ID), sy.S.Zero
@@ -1426,35 +1437,28 @@ def define_polymer_model(
     # needed to compute the summary/emissions expressions below. Passing
     # recipe_data here only *stores* it on the compiled model (set_recipe();
     # no substitution into the accumulated values happens at build time) --
-    # it's needed so PassThrough/Reporting below can read recipe values. All
+    # it's needed so PassThrough/Report below can read recipe values. All
     # emissions expressions stay raw (intermediates unresolved), deferred to
     # the final model.lambdify(expressions=other_results) call, which
     # resolves everything in one efficient, CSE-aware pass.
     compiled = model.build(recipe_data)
 
-    # One shared Reporting drives every summary below. Its groupings:
-    #  - "stage": the PROCESS_GROUPS partition + an "other" catch-all (the
-    #    empty "other" absorbs the remaining processes silently -- see
-    #    reporting.Grouping.build);
+    # One shared Report drives the emissions summaries below: the utility
+    # Source processes' burdens are reattributed to their consumers via
+    # PassThrough (table substitution -- see calc_emissions()'s docstring),
+    # with three grouping columns:
+    #  - "stage": the PROCESS_GROUPS partition + an explicit "other"
+    #    catch-all over the remaining processes (boundary Sources, Use, ...);
     #  - "source": elementary exchanges grouped into emission-source categories;
     #  - "feedstock_group": feedstock supplying processes by reporting group.
-    # Plus the GWP_ALL characterisation (all burdens -> kgCO2e). The utility
-    # Source processes' burdens are reattributed to their consumers via
-    # PassThrough (see calc_emissions()'s docstring).
-    reporting = Reporting(
-        compiled,
-        groupings={
-            "stage": {**PROCESS_GROUPS, "other": set()},
-            "source": EMISSIONS_SOURCE_GROUPING,
-            "feedstock_group": FEEDSTOCK_GROUPING,
-        },
-        characterisations={"GWPall": GWP_ALL},
-        pass_through=PassThrough(compiled, UTILITY_SOURCE_PROCESSES),
-    )
+    # Characterisation (GWP_ALL -> kgCO2e) is applied per view in
+    # calc_emissions(), not baked in here.
+    process_ids = [p.id for p in compiled.processes]
+    stage_grouping = Grouping.complete(PROCESS_GROUPS, process_ids)
 
-    flow_results = calc_flow_summaries(compiled, reporting)
-    utility_reqs = calc_utility_requirements(reporting)
-    emissions = calc_emissions(reporting)
+    flow_results = calc_flow_summaries(compiled.structure)
+    utility_reqs = calc_utility_requirements(compiled.structure, stage_grouping)
+    emissions = calc_emissions(compiled.structure, stage_grouping)
     other_results = {**flow_results, **utility_reqs, **emissions}
 
     return other_results

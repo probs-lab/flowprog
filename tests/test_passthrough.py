@@ -13,7 +13,7 @@ from rdflib import URIRef
 
 from flowprog import ModelBuilder, Process, Object, ElementaryExchange
 from flowprog.allocation import PassThrough
-from flowprog.reporting import Reporting
+from flowprog.reporting import Report, evaluate_views, lambdify_views
 
 MASS = URIRef("http://qudt.org/vocab/quantitykind/Mass")
 ENERGY = URIRef("http://qudt.org/vocab/quantitykind/Energy")
@@ -39,12 +39,17 @@ RECIPE = {
 }
 
 
-def build_model(dispatch_source=True, recipe=RECIPE):
+def build_model(dispatch_source=True, recipe=RECIPE, source_exchanges=("GHG_up_elec",)):
     """Two producers (A burden-carrying, B not) both consuming boundary-supplied
     electricity, mirroring the petrochem utility pattern in miniature."""
     processes = [
-        Process("SourceOfElec", produces=["elec"], consumes=[]),
-        Process("A", produces=["prod"], consumes=["elec"]),
+        Process(
+            "SourceOfElec",
+            produces=["elec"],
+            consumes=[],
+            exchanges=list(source_exchanges),
+        ),
+        Process("A", produces=["prod"], consumes=["elec"], exchanges=["CO2"]),
         Process("B", produces=["prod"], consumes=["elec"]),
         Process("Use", produces=[], consumes=["prod"]),
     ]
@@ -84,17 +89,13 @@ EXPECTED_A_CO2 = 75 * 2.0
 
 
 def evaluate(model, expr):
-    # eval() substitutes VALUES into intermediates but not into parameters
-    # appearing directly in the (recipe-substituted) expression, so finish
-    # with a plain subs().
-    result = sy.S(model.eval(sy.S(expr), VALUES)).subs(VALUES)
-    return float(result)
+    return float(model.eval(sy.S(expr), VALUES))
 
 
 class TestPassThroughFlows:
     def test_source_burden_reattributed_to_consumers(self):
         model = build_model()
-        pt = PassThrough(model, ["SourceOfElec"])
+        pt = PassThrough(model.structure, ["SourceOfElec"])
         flows = pt.elementary_flows()
 
         rows = {
@@ -110,7 +111,7 @@ class TestPassThroughFlows:
 
     def test_via_column_records_provenance(self):
         model = build_model()
-        flows = PassThrough(model, ["SourceOfElec"]).elementary_flows()
+        flows = PassThrough(model.structure, ["SourceOfElec"]).elementary_flows()
         via = {
             (r.exchange, r.process): r.via for r in flows.itertuples()
         }
@@ -119,18 +120,18 @@ class TestPassThroughFlows:
 
     def test_totals_preserved_when_market_balances(self):
         model = build_model()
-        pt = PassThrough(model, ["SourceOfElec"])
+        pt = PassThrough(model.structure, ["SourceOfElec"])
 
         def total(table):
             return sum(evaluate(model, v) for v in table["value"])
 
         assert total(pt.elementary_flows()) == pytest.approx(
-            total(model.to_elementary_flows(raw=True))
+            total(model.structure.elementary_flow_table())
         )
 
     def test_residuals_zero_when_market_balances(self):
         model = build_model()
-        residuals = PassThrough(model, ["SourceOfElec"]).residuals()
+        residuals = PassThrough(model.structure, ["SourceOfElec"]).residuals()
         assert len(residuals) == 1
         assert evaluate(model, residuals["value"].iloc[0]) == pytest.approx(0)
 
@@ -138,18 +139,20 @@ class TestPassThroughFlows:
         # Without the dispatch step the source never runs: everything that
         # would have been redistributed shows up as (negative) residual.
         model = build_model(dispatch_source=False)
-        residuals = PassThrough(model, ["SourceOfElec"]).residuals()
+        residuals = PassThrough(model.structure, ["SourceOfElec"]).residuals()
         assert evaluate(model, residuals["value"].iloc[0]) == pytest.approx(
             -(EXPECTED_A_ELEC + EXPECTED_B_ELEC)
         )
 
     def test_burden_less_pass_through_is_noop(self):
+        # A pass-through process that declares no exchanges carries no burden,
+        # so reattribution adds nothing (structural: sparsity is declared).
         recipe = {
             **RECIPE,
             "SourceOfElec": {"produces": {"elec": 1.0}},
         }
-        model = build_model(recipe=recipe)
-        flows = PassThrough(model, ["SourceOfElec"]).elementary_flows()
+        model = build_model(recipe=recipe, source_exchanges=())
+        flows = PassThrough(model.structure, ["SourceOfElec"]).elementary_flows()
         assert set(flows["exchange"]) == {"CO2"}
 
     def test_non_unit_supply_coefficient_divides_intensity(self):
@@ -162,7 +165,7 @@ class TestPassThroughFlows:
             },
         }
         model = build_model(recipe=recipe)
-        flows = PassThrough(model, ["SourceOfElec"]).elementary_flows()
+        flows = PassThrough(model.structure, ["SourceOfElec"]).elementary_flows()
         rows = {
             (r.exchange, r.process): evaluate(model, r.value)
             for r in flows.itertuples()
@@ -171,48 +174,65 @@ class TestPassThroughFlows:
 
 
 class TestPassThroughReporting:
-    def test_aggregate_by_stage_and_exchange(self):
+    """Reporting composes with pass-through by table substitution: the
+    reattributed table is dropped into `elementary_flows()` in place of the
+    model's own, and everything downstream is identical."""
+
+    def test_by_stage_and_exchange(self):
         model = build_model()
-        rep = Reporting(
-            model,
-            groupings={
-                "stage": {"making": {"A", "B"}, "boundary": {"SourceOfElec"}, "use": {"Use"}}
-            },
-            pass_through=PassThrough(model, ["SourceOfElec"]),
+        pt = PassThrough(model.structure, ["SourceOfElec"])
+        rep = Report.elementary_flows(model.structure, pt.elementary_flows()).with_group(
+            "stage",
+            {"making": {"A", "B"}, "boundary": {"SourceOfElec"}, "use": {"Use"}},
+            on="process",
         )
-        result = rep.aggregate(None, by=("stage", "exchange"), values=VALUES)
-        assert result[("making", "GHG_up_elec")] == pytest.approx(
+        result = evaluate_views(model, rep.by("stage", "exchange"), VALUES)
+        assert float(result[("making", "GHG_up_elec")]) == pytest.approx(
             EXPECTED_A_ELEC + EXPECTED_B_ELEC
         )
-        assert result[("making", "CO2")] == pytest.approx(EXPECTED_A_CO2)
+        assert float(result[("making", "CO2")]) == pytest.approx(EXPECTED_A_CO2)
         # Nothing left attributed to the pass-through process itself
         assert ("boundary", "GHG_up_elec") not in result
 
-    def test_reporting_accepts_process_ids_directly(self):
+    def test_by_process(self):
         model = build_model()
-        rep = Reporting(model, pass_through=["SourceOfElec"])
-        by_process = rep.aggregate(None, by="process", values=VALUES)
-        assert by_process["A"] == pytest.approx(EXPECTED_A_CO2 + EXPECTED_A_ELEC)
+        pt = PassThrough(model.structure, ["SourceOfElec"])
+        rep = Report.elementary_flows(model.structure, pt.elementary_flows()).characterise(1)
+        by_process = evaluate_views(model, rep.by("process"), VALUES)
+        assert float(by_process["A"]) == pytest.approx(
+            EXPECTED_A_CO2 + EXPECTED_A_ELEC
+        )
 
-    def test_raw_aggregate_resolves_through_lambdify(self):
+    def test_by_via_column_attributes_received_burden(self):
+        # The `via` column from PassThrough is just another groupable column.
         model = build_model()
-        rep = Reporting(model, pass_through=PassThrough(model, ["SourceOfElec"]))
-        raw_total = rep.aggregate(None, raw=True)
-        func = model.lambdify(expressions={"total": raw_total})
-        expected = rep.aggregate(None, values=VALUES)
-        assert func(VALUES)["total"] == pytest.approx(expected)
+        pt = PassThrough(model.structure, ["SourceOfElec"])
+        rep = Report.elementary_flows(model.structure, pt.elementary_flows()).characterise(1)
+        by_via = evaluate_views(model, rep.by("via"), VALUES)
+        assert float(by_via["SourceOfElec"]) == pytest.approx(
+            EXPECTED_A_ELEC + EXPECTED_B_ELEC
+        )
+
+    def test_views_resolve_through_lambdify(self):
+        model = build_model()
+        pt = PassThrough(model.structure, ["SourceOfElec"])
+        rep = Report.elementary_flows(model.structure, pt.elementary_flows()).characterise(1)
+        total = rep.total()
+        func = lambdify_views(model, total)
+        expected = evaluate_views(model, total, VALUES)
+        assert func(VALUES) == pytest.approx(float(expected))
 
 
 class TestPassThroughValidation:
     def test_unknown_process_raises(self):
         model = build_model()
         with pytest.raises(ValueError):
-            PassThrough(model, ["NoSuchProcess"])
+            PassThrough(model.structure, ["NoSuchProcess"])
 
     def test_rule_not_implemented(self):
         model = build_model()
         with pytest.raises(NotImplementedError, match="rule"):
-            PassThrough(model, ["SourceOfElec"], rule=object())
+            PassThrough(model.structure, ["SourceOfElec"], rule=object())
 
     def test_multi_output_not_implemented(self):
         processes = [
@@ -228,12 +248,12 @@ class TestPassThroughValidation:
             {"Cracker": {"produces": {"ethylene": 0.6, "propylene": 0.4}}}
         )
         with pytest.raises(NotImplementedError, match="allocation rule"):
-            PassThrough(model, ["Cracker"])
+            PassThrough(model.structure, ["Cracker"])
 
     def test_inputs_not_implemented(self):
         model = build_model()
         with pytest.raises(NotImplementedError, match="inputs"):
-            PassThrough(model, ["A"])  # A consumes elec
+            PassThrough(model.structure, ["A"])  # A consumes elec
 
     def test_co_supplied_object_not_implemented(self):
         processes = [
@@ -251,16 +271,4 @@ class TestPassThroughValidation:
             }
         )
         with pytest.raises(NotImplementedError, match="market-share"):
-            PassThrough(model, ["Source1"])
-
-    def test_missing_supply_recipe_raises(self):
-        recipe = {k: v for k, v in RECIPE.items() if k != "SourceOfElec"}
-        model = build_model(recipe=recipe)
-        with pytest.raises(ValueError, match="recipe"):
-            PassThrough(model, ["SourceOfElec"])
-
-    def test_missing_consumer_recipe_raises(self):
-        recipe = {**RECIPE, "B": {"produces": {"prod": 1.0}}}
-        model = build_model(recipe=recipe)
-        with pytest.raises(ValueError, match="recipe"):
-            PassThrough(model, ["SourceOfElec"])
+            PassThrough(model.structure, ["Source1"])

@@ -232,6 +232,13 @@ class SympyModel:
                 exchange_id = self.structure.elementary_exchanges[e].id
                 proc_id = self.processes[j].id
 
+                if exchange_id not in self.processes[j].exchanges:
+                    raise ValueError(
+                        f"Recipe sets B value for exchange '{exchange_id}' on "
+                        f"process '{proc_id}', but the process definition only "
+                        f"lists: {self.processes[j].exchanges}"
+                    )
+
                 if proc_id not in self._recipe_by_id:
                     self._recipe_by_id[proc_id] = {
                         "consumes": {},
@@ -263,9 +270,14 @@ class SympyModel:
                         f"but process definition only lists: {process.produces}"
                     )
 
-            # Validate elementary exchanges are declared on the model
+            # Validate elementary exchanges against the process's declaration
             for exchange_id in recipe.get("exchanges", {}):
                 self.structure.lookup_exchange(exchange_id)
+                if exchange_id not in process.exchanges:
+                    raise ValueError(
+                        f"Process '{proc_id}' recipe has exchange '{exchange_id}', "
+                        f"but process definition only lists: {process.exchanges}"
+                    )
 
             # Store recipe
             self._recipe_by_id[proc_id] = recipe
@@ -352,12 +364,9 @@ class SympyModel:
 
         Structural symbols (X[j]/Y[j], Balance[i], the deficits,
         ElementaryBalance[e], etc) are replaced by their accumulated
-        expressions, and recipe symbols are replaced by their (U/S/B) by their
-        values. Elementary exchanges B[e,j] with no recipe entry are assumed to
-        be zero and omitted from the result; recipe symbols S[i,j] and U[i,j] in
-        contrast are preserved if they have no value available to substitute,
-        since the structure of the system is known but the list of elementary
-        exchanges per process is not explicitly defined.
+        expressions, and recipe symbols S[i,j]/U[i,j]/B[e,j] are replaced by
+        their values. Any recipe symbol with no value available to substitute
+        is preserved as-is.
 
         :param expr: Symbol or Sympy expression to evaluate.
         :param values: Additional parameter values to substitute.
@@ -386,136 +395,37 @@ class SympyModel:
             recipe_syms = self.get_recipe_as_symbols()
             if recipe_syms:
                 result = result.xreplace(recipe_syms)
-            # Intermediates weren't expanded here, so `values` (which target
-            # intermediate definitions) weren't applied; substitute them into
-            # the visible expression -- a separate pass so a recipe value that
-            # is itself a parameter (e.g. B[e,j] -> EF_x -> number) chains.
-            if not expand_intermediates and values and isinstance(result, sy.Basic):
+            # Substitute `values` into the visible expression. In the
+            # expanded case eval_intermediates applied them only *inside*
+            # intermediate definitions, and in the non-expanded case not at
+            # all -- either way, parameters appearing directly in the
+            # expression (e.g. via a recipe value B[e,j] -> EF_x -> number)
+            # still need this separate pass to chain through. Any recipe
+            # symbol left over (S/U/B with no value) persists, as before.
+            if values and isinstance(result, sy.Basic):
                 result = result.xreplace(values)
-            # xreplace() can collapse a bare Indexed expression (e.g.
-            # eval(S[i,j])) into a raw Python value when the whole expression
-            # matches a substitution key -- re-check before the sympy-only call.
-            if isinstance(result, sy.Basic):
-                # A B[e,j] left over here has no recipe entry for that
-                # (exchange, process) pair, which means process j simply has
-                # no such exchange -- implicitly zero.
-                remaining_B = {
-                    a: sy.S.Zero for a in result.atoms(sy.Indexed) if a.base == self.B
-                }
-                if remaining_B:
-                    result = result.xreplace(remaining_B)
         return result
 
     def to_flows(self, values=None, flow_ids=None):
-        """Return flows data frame with variables substituted.
+        """Return the technosphere flow table with values resolved.
 
-        Recipe data is automatically included.
+        This is a thin wrapper over the structural `ModelStructure.flow_table`
+        (the general form) resolved through this model: equivalent to
+        ``evaluate_views(model, model.structure.flow_table(), values)``, with an
+        optional hash-based ``id`` column. Recipe data is automatically
+        included.
 
         :param values: Additional parameter values to substitute
         :param flow_ids: If True, assign hash-based flow ids to each row
-        :return: DataFrame with flows
+        :return: DataFrame with columns source, target, material, metric, value
+
         """
-        if values is None:
-            values = {}
+        from ..reporting import evaluate_views
 
-        rows = []
-        M = len(self.processes)
-
-        for j in range(M):
-            for i in (
-                self.structure._obj_name_to_idx[name]
-                for name in self.processes[j].produces
-            ):
-                expr = self._values[self.Y[j]] * self.S[i, j]
-                # Resolve intermediates first, then substitute values
-                resolved = self.eval(expr, values)
-                rows.append(
-                    (
-                        self.processes[j].id,
-                        self.objects[i].id,
-                        self.objects[i].id,
-                        self.objects[i].metric,
-                        resolved,
-                    )
-                )
-
-        for j in range(M):
-            for i in (
-                self.structure._obj_name_to_idx[name]
-                for name in self.processes[j].consumes
-            ):
-                expr = self._values[self.X[j]] * self.U[i, j]
-                # Resolve intermediates first, then substitute values
-                resolved = self.eval(expr, values)
-                rows.append(
-                    (
-                        self.objects[i].id,
-                        self.processes[j].id,
-                        self.objects[i].id,
-                        self.objects[i].metric,
-                        resolved,
-                    )
-                )
-
-        result = pd.DataFrame(
-            rows, columns=["source", "target", "material", "metric", "value"]
-        )
-
+        table = evaluate_views(self, self.structure.flow_table(), values)
         if flow_ids:
-
-            def flow_id(row):
-                return hashlib.md5(
-                    (row["source"] + row["target"] + row["material"]).encode()
-                ).hexdigest()
-
-            result["id"] = result.apply(flow_id, axis=1)
-
-        return result
-
-    def to_elementary_flows(self, values=None, raw=False):
-        """Return a tidy table of elementary exchange flows (B[e,j] * Y[j]).
-
-        The result never includes unknown `B[e,j]` symbols: only (exchange,
-        process) where `B` values are known are included.
-
-        :param values: Additional parameter values to substitute.
-        :param raw: If True, each value is the raw accumulated Y expression
-            times the recipe B value, with intermediate placeholder symbols left
-            unresolved. This is much faster for large models (no per-row
-            `eval()`); resolve the expressions afterwards in one pass via
-            `lambdify(expressions=...)` or `eval()`. Cannot be combined with
-            `values`.
-        :return: DataFrame with columns exchange, process, metric, value
-
-        """
-
-        # FIXME: should `raw` here be the same as `expand_intermediates=False`?
-
-        if raw and values is not None:
-            raise ValueError("`values` cannot be combined with raw=True")
-        if values is None:
-            values = {}
-
-        rows = []
-        for proc_id, recipe in self._recipe_by_id.items():
-            j = self.structure.lookup_process(proc_id)
-            for exchange_id, b_value in recipe.get("exchanges", {}).items():
-                e = self.structure.lookup_exchange(exchange_id)
-                if raw:
-                    resolved = self._values[self.Y[j]] * sy.S(b_value)
-                else:
-                    expr = self._values[self.Y[j]] * self.B[e, j]
-                    resolved = self.eval(expr, values)
-                rows.append(
-                    (
-                        exchange_id,
-                        proc_id,
-                        self.structure.elementary_exchanges[e].metric,
-                        resolved,
-                    )
-                )
-
-        return pd.DataFrame(rows, columns=["exchange", "process", "metric", "value"])
+            table["id"] = [_flow_id(r) for r in table.itertuples()]
+        return table
 
     def lambdify(self, data=None, expressions: Optional[dict] = None, modules=None):
         """Return function to evaluate model.
@@ -538,13 +448,26 @@ class SympyModel:
         # Merge recipe with additional data for early substitution
         all_data = {**self.get_recipe_as_symbols(), **data}
 
+        # Default to the model's own flows, keyed by hash-based flow id --
+        # the structural table, routed through the same path as any other
+        # expressions dict (below) rather than eagerly evaluated.
         if expressions is None:
-            flows_sym = self.to_flows(all_data, flow_ids=True)
-            index = flows_sym["id"]
-            expr_values = flows_sym.value.values
-        else:
-            index = expressions.keys()
-            expr_values = expressions.values()
+            flows = self.structure.flow_table()
+            expressions = {
+                _flow_id(r): v for r, v in zip(flows.itertuples(), flows["value"])
+            }
+
+        index = list(expressions.keys())
+        # Resolve structural symbols (X[j]/Y[j], Balance[i], ElementaryFlows,
+        # ...) against accumulated state, so purely structural expressions --
+        # the flows above, or reporting views over the structural flow
+        # tables -- compile directly. Recipe symbols S/U/B and intermediates
+        # are substituted later (all_data, in _lambdify), keeping expressions
+        # compact and CSE-friendly.
+        expr_values = [
+            self.structure.resolve_structural_symbols(sy.S(v), self._values)
+            for v in expressions.values()
+        ]
 
         # Function that returns a vector of values in same order as index
         func = self._lambdify(expr_values, all_data, modules=modules)
@@ -635,7 +558,7 @@ class SympyModel:
 
         # Build the data structure
         data = {
-            "version": "1.1",
+            "version": "1.2",
             "metadata": metadata or {},
             "saved_at": datetime.now().isoformat(),
             "type": "SympyModel",
@@ -645,6 +568,7 @@ class SympyModel:
                     "produces": p.produces,
                     "consumes": p.consumes,
                     "has_stock": p.has_stock,
+                    "exchanges": p.exchanges,
                 }
                 for p in self.processes
             ],
@@ -713,7 +637,7 @@ class SympyModel:
             data = json.load(f)
 
         # Check version compatibility
-        if data.get("version") not in ("1.0", "1.1"):
+        if data.get("version") not in ("1.0", "1.1", "1.2"):
             _log.warning(
                 f"Model file version {data.get('version')} may not be compatible "
                 "with this version of flowprog"
@@ -732,9 +656,20 @@ class SympyModel:
                 produces=p["produces"],
                 consumes=p["consumes"],
                 has_stock=p["has_stock"],
+                exchanges=p.get("exchanges", []),
             )
             for p in data["processes"]
         ]
+
+        # Files saved before exchange sparsity became structural (< v1.2)
+        # have no per-process declarations; backfill them from the recipe so
+        # set_recipe() validation below still passes.
+        saved_recipe = data.get("recipe") or {}
+        for process, saved in zip(processes, data["processes"]):
+            if "exchanges" not in saved:
+                process.exchanges = list(
+                    saved_recipe.get(process.id, {}).get("exchanges", {})
+                )
 
         objects = [
             Object(
@@ -901,6 +836,14 @@ def _compile_floor(values_dict, floor_transform, accumulated_values, structure):
         )
         for k, v in values_dict.items()
     }
+
+
+def _flow_id(row):
+    """Hash-based id for a flow row (a namedtuple/Series with source/target/
+    material), stable across evaluations."""
+    return hashlib.md5(
+        (row.source + row.target + row.material).encode()
+    ).hexdigest()
 
 
 def convert_indexed_symbols(data):

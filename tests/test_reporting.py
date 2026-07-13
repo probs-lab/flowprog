@@ -1,4 +1,8 @@
-"""Tests for flowprog.reporting: groupings, characterisation, aggregation."""
+"""Tests for flowprog.reporting: symbolic views over raw flow tables.
+
+The pipeline under test: raw flow table (stage 1) -> Report symbolic views
+(stage 2) -> evaluation by substitution or compiled function (stage 3).
+"""
 
 import logging
 
@@ -8,7 +12,12 @@ import sympy as sy
 from rdflib import URIRef
 
 from flowprog import ModelBuilder, Process, Object, ElementaryExchange
-from flowprog.reporting import Reporting, Grouping
+from flowprog.reporting import (
+    Grouping,
+    Report,
+    evaluate_views,
+    lambdify_views,
+)
 
 MASS = URIRef("http://qudt.org/vocab/quantitykind/Mass")
 
@@ -23,8 +32,8 @@ def MExchange(id, *args, **kwargs):
 
 def build_model():
     processes = [
-        Process("Dirty", produces=["out"], consumes=[]),
-        Process("Clean", produces=["out"], consumes=[]),
+        Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2", "CH4"]),
+        Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
         Process("Use", produces=[], consumes=["out"]),
     ]
     objects = [MObject("out", has_market=True)]
@@ -46,6 +55,13 @@ def build_model():
 
 
 GWP = {"CO2": 1, "CH4": 28}
+STAGES = {"upstream": {"Dirty", "Clean"}, "downstream": {"Use"}}
+
+# At demand=100: Y_Dirty=75, Y_Clean=25
+# CO2: 75*2 + 25*0.5 = 162.5; CH4: 75*0.1 = 7.5; GWP: 162.5 + 7.5*28 = 372.5
+EXPECTED_CO2 = 162.5
+EXPECTED_CH4 = 7.5
+EXPECTED_GWP = 372.5
 
 
 class TestGrouping:
@@ -88,266 +104,319 @@ class TestGrouping:
             )
         assert len(caplog.records) == 0
 
+    def test_complete_builds_explicit_catch_all(self, caplog):
+        groups = Grouping.complete({"upstream": {"Dirty"}}, {"Dirty", "Clean"})
+        assert groups == {"upstream": {"Dirty"}, "other": {"Clean"}}
+        with caplog.at_level(logging.WARNING):
+            mapping = Grouping.build("stage", groups, all_ids={"Dirty", "Clean"})
+        assert mapping["Clean"] == "other"
+        assert len(caplog.records) == 0
 
-class TestReportingAxisInference:
-    def test_process_axis_grouping(self):
+
+class TestReportConstruction:
+    def test_elementary_flows_wraps_raw_table(self):
         model, demand = build_model()
-        rep = Reporting(
-            model,
-            groupings={"stage": {"upstream": {"Dirty", "Clean"}, "downstream": {"Use"}}},
+        rep = Report.elementary_flows(model.structure)
+        assert {"exchange", "process", "value"} <= set(rep.table.columns)
+        # Values are raw symbolic expressions, not numbers
+        assert all(isinstance(v, sy.Basic) for v in rep.table["value"])
+
+    def test_table_without_value_column_rejected(self):
+        with pytest.raises(ValueError, match="value"):
+            Report(pd.DataFrame({"process": ["A"]}))
+
+    def test_accepts_substitute_table(self):
+        # Any table of the right shape can be reported on -- reporting does
+        # not care where it came from (see test_passthrough for the real
+        # pass-through case).
+        model, demand = build_model()
+        table = model.structure.elementary_flow_table()
+        rep = Report.elementary_flows(model.structure, table.iloc[:1])
+        assert len(rep.table) == 1
+
+
+class TestWithGroup:
+    def test_adds_label_column(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        assert set(rep.table["stage"]) <= {"upstream", "downstream"}
+
+    def test_axis_is_explicit_not_inferred(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).with_group(
+            "ghg_kind", {"fossil": {"CO2"}, "non_fossil": {"CH4"}}, on="exchange"
         )
-        assert rep._groupings["stage"][0] == "process"
+        assert set(rep.table["ghg_kind"]) == {"fossil", "non_fossil"}
 
-    def test_exchange_axis_grouping(self):
+    def test_unknown_id_raises_when_universe_known(self):
         model, demand = build_model()
-        rep = Reporting(
-            model, groupings={"ghg_kind": {"fossil": {"CO2"}, "other": {"CH4"}}}
+        with pytest.raises(ValueError, match="NotAnId"):
+            Report.elementary_flows(model.structure).with_group(
+                "stage", {"x": {"NotAnId"}}, on="process"
+            )
+
+    def test_group_id_absent_from_table_is_ok(self):
+        # "Use" has no exchanges so never appears in the flow table, but it
+        # is a valid process id and may be named in a grouping.
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        assert "downstream" not in set(rep.table["stage"])
+
+    def test_missing_column_raises(self):
+        model, demand = build_model()
+        with pytest.raises(ValueError, match="no column"):
+            Report.elementary_flows(model.structure).with_group("stage", STAGES, on="nope")
+
+    def test_no_universe_validates_disjointness_only(self):
+        table = pd.DataFrame({"process": ["A", "B"], "value": [sy.S(1), sy.S(2)]})
+        rep = Report(table).with_group("g", {"x": {"A", "SomethingElse"}}, on="process")
+        assert list(rep.table["g"]) == ["x", "other"]
+
+
+class TestCharacterise:
+    def test_factors_applied_missing_default_zero(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).characterise({"CO2": 1}, name="CO2_only")
+        total = evaluate_views(model, rep.total(), {demand: 100})
+        assert float(total) == pytest.approx(EXPECTED_CO2)
+        assert rep.characterisation == "CO2_only"
+
+    def test_scalar_one_is_explicit_unit_characterisation(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).characterise(1)
+        total = evaluate_views(model, rep.total(), {demand: 100})
+        assert float(total) == pytest.approx(EXPECTED_CO2 + EXPECTED_CH4)
+
+
+class TestCommensurabilityGuard:
+    def test_uncharacterised_total_over_mixed_exchanges_raises(self):
+        model, demand = build_model()
+        with pytest.raises(ValueError, match="characterise"):
+            Report.elementary_flows(model.structure).total()
+
+    def test_uncharacterised_by_stage_raises(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        with pytest.raises(ValueError, match="characterise"):
+            rep.by("stage")
+
+    def test_by_exchange_is_always_allowed(self):
+        model, demand = build_model()
+        result = evaluate_views(
+            model, Report.elementary_flows(model.structure).by("exchange"), {demand: 100}
         )
-        assert rep._groupings["ghg_kind"][0] == "exchange"
+        assert float(result["CO2"]) == pytest.approx(EXPECTED_CO2)
+        assert float(result["CH4"]) == pytest.approx(EXPECTED_CH4)
 
-    def test_unrecognised_ids_raise(self):
+    def test_single_exchange_total_allowed(self):
         model, demand = build_model()
-        with pytest.raises(ValueError):
-            Reporting(model, groupings={"bad": {"x": {"NotAnId"}}})
+        rep = Report.elementary_flows(model.structure).filter(exchange="CO2")
+        total = evaluate_views(model, rep.total(), {demand: 100})
+        assert float(total) == pytest.approx(EXPECTED_CO2)
 
 
-class TestAggregateScalar:
-    def test_uncharacterised_total_symbolic(self):
+class TestViews:
+    def test_total_symbolic(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        total = rep.aggregate(None)
-        # Dirty: demand*3/4*2.0 (CO2) + demand*3/4*0.1 (CH4); Clean: demand*1/4*0.5 (CO2)
-        expected = demand * sy.Rational(3, 4) * 2.0 + demand * sy.Rational(
-            3, 4
-        ) * 0.1 + demand * sy.Rational(1, 4) * 0.5
-        # Compare numerically: the raw-then-resolve aggregation path may
-        # reassociate float sums at the 1e-16 level.
-        assert float(total.subs(demand, 100)) == pytest.approx(
-            float(expected.subs(demand, 100))
-        )
+        total = Report.elementary_flows(model.structure).characterise(GWP, name="GWP").total()
+        assert isinstance(total, sy.Basic)
+        resolved = evaluate_views(model, total)  # fully symbolic
+        assert float(resolved.subs(demand, 100)) == pytest.approx(EXPECTED_GWP)
 
-    def test_characterised_total_numeric(self):
+    def test_by_grouping(self):
         model, demand = build_model()
-        rep = Reporting(model, characterisations={"GWP": GWP})
-        total = rep.aggregate("GWP", values={demand: 100})
-        # Dirty: CO2=75*2=150, CH4=75*0.1=7.5; Clean: CO2=25*0.5=12.5
-        expected = (150 + 12.5) * 1 + 7.5 * 28
-        assert total == pytest.approx(expected)
-
-    def test_missing_characterisation_factor_defaults_zero(self):
-        model, demand = build_model()
-        # GWP_CO2_only omits CH4 -- CH4 flows should contribute zero
-        rep = Reporting(model, characterisations={"GWP_CO2_only": {"CO2": 1}})
-        total = rep.aggregate("GWP_CO2_only", values={demand: 100})
-        expected = 150 + 12.5
-        assert total == pytest.approx(expected)
-
-    def test_unknown_characterisation_raises(self):
-        model, demand = build_model()
-        rep = Reporting(model)
-        with pytest.raises(KeyError):
-            rep.aggregate("NoSuchCharacterisation")
-
-
-class TestAggregateByGrouping:
-    def _rep(self):
-        model, demand = build_model()
-        rep = Reporting(
-            model,
-            groupings={"stage": {"upstream": {"Dirty", "Clean"}}},
-            characterisations={"GWP": GWP},
-        )
-        return rep, demand
-
-    def test_by_grouping_returns_series(self):
-        rep, demand = self._rep()
-        result = rep.aggregate("GWP", by="stage", values={demand: 100})
+        rep = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        result = evaluate_views(model, rep.characterise(GWP).by("stage"), {demand: 100})
         assert isinstance(result, pd.Series)
-        assert result["upstream"] == pytest.approx((150 + 12.5) * 1 + 7.5 * 28)
+        assert float(result["upstream"]) == pytest.approx(EXPECTED_GWP)
 
-    def test_by_process_raw_id(self):
-        rep, demand = self._rep()
-        result = rep.aggregate("GWP", by="process", values={demand: 100})
-        assert result["Dirty"] == pytest.approx(150 * 1 + 7.5 * 28)
-        assert result["Clean"] == pytest.approx(12.5 * 1)
-
-    def test_by_exchange_raw_id(self):
-        rep, demand = self._rep()
-        result = rep.aggregate(None, by="exchange", values={demand: 100})
-        assert result["CO2"] == pytest.approx(150 + 12.5)
-        assert result["CH4"] == pytest.approx(7.5)
-
-    def test_by_two_keys_returns_multiindex_series(self):
-        rep, demand = self._rep()
-        result = rep.aggregate(None, by=("stage", "exchange"), values={demand: 100})
-        assert result[("upstream", "CO2")] == pytest.approx(150 + 12.5)
-        assert result[("upstream", "CH4")] == pytest.approx(7.5)
-
-    def test_unknown_grouping_name_raises(self):
-        rep, demand = self._rep()
-        with pytest.raises(ValueError):
-            rep.aggregate("GWP", by="not_a_grouping")
-
-
-class TestLimitToProcesses:
-    def test_limit_to_processes_restricts_rows(self):
+    def test_by_process(self):
         model, demand = build_model()
-        rep = Reporting(model, characterisations={"GWP": GWP})
-        total = rep.aggregate(
-            "GWP", limit_to_processes={"Dirty"}, values={demand: 100}
+        result = evaluate_views(
+            model,
+            Report.elementary_flows(model.structure).characterise(GWP).by("process"),
+            {demand: 100},
         )
-        assert total == pytest.approx(150 * 1 + 7.5 * 28)
+        assert float(result["Dirty"]) == pytest.approx(150 + 7.5 * 28)
+        assert float(result["Clean"]) == pytest.approx(12.5)
 
-
-class TestTable:
-    def test_table_has_grouping_columns(self):
+    def test_by_two_keys_multiindex(self):
         model, demand = build_model()
-        rep = Reporting(
-            model, groupings={"stage": {"upstream": {"Dirty", "Clean"}}}
+        rep = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        result = evaluate_views(model, rep.by("stage", "exchange"), {demand: 100})
+        assert float(result[("upstream", "CO2")]) == pytest.approx(EXPECTED_CO2)
+        assert float(result[("upstream", "CH4")]) == pytest.approx(EXPECTED_CH4)
+
+    def test_by_unknown_column_raises(self):
+        model, demand = build_model()
+        with pytest.raises(ValueError, match="no column"):
+            Report.elementary_flows(model.structure).by("not_a_grouping")
+
+    def test_filter_restricts_rows(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).filter(process={"Dirty"}).characterise(GWP)
+        total = evaluate_views(model, rep.total(), {demand: 100})
+        assert float(total) == pytest.approx(150 + 7.5 * 28)
+
+
+class TestStructuralValues:
+    """The flow table and all views are purely structural: a function of the
+    model structure alone, holding no evaluable model, backend state, or
+    recipe values."""
+
+    def test_structure_attached_and_propagated_through_chaining(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).characterise(GWP).filter(process={"Dirty"})
+        assert rep.structure is model.structure
+
+    def test_accepts_bare_structure(self):
+        # No evaluable model needed to build views -- only the structure.
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure)
+        total = rep.characterise(GWP).total()
+        assert float(evaluate_views(model, total, {demand: 100})) == pytest.approx(
+            EXPECTED_GWP
         )
-        table = rep.table()
-        assert "stage" in table.columns
-        assert set(table["stage"]) <= {"upstream", "other"}
 
-    def test_table_values_evaluated_when_given(self):
+    def test_values_use_structural_symbols(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        table = rep.table(values={demand: 100})
-        rows = {(r.exchange, r.process): r.value for r in table.itertuples()}
+        table = Report.elementary_flows(model.structure).table
+        Y, B = model.structure.Y, model.structure.B
+        for value in table["value"]:
+            bases = {a.base for a in value.atoms(sy.Indexed)}
+            assert bases == {Y, B}
+
+    def test_declared_cell_without_recipe_value_persists(self):
+        # "Clean" declares CH4 but this recipe gives it no value: the row
+        # exists structurally and its value persists as a symbol (like S/U),
+        # rather than being silently zeroed.
+        processes = [
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2", "CH4"]),
+            Process("Use", produces=[], consumes=["out"]),
+        ]
+        objects = [MObject("out", has_market=True)]
+        exchanges = [MExchange("CO2"), MExchange("CH4")]
+        builder = ModelBuilder(processes, objects, exchanges)
+        demand = sy.Symbol("demand", positive=True)
+        builder.add(builder.push_consumption("out", demand))
+        builder.add(builder.pull_process_output("Clean", "out", demand))
+        model = builder.build(
+            {
+                "Clean": {"produces": {"out": 1.0}, "exchanges": {"CO2": 0.5}},
+                "Use": {"consumes": {"out": 1.0}},
+            }
+        )
+        result = evaluate_views(
+            model, Report.elementary_flows(model.structure).by("exchange"), {demand: 100}
+        )
+        # CH4 for Clean (index 1) has no recipe value, so it stays symbolic.
+        ch4 = sy.S(result["CH4"])
+        assert not ch4.is_number
+        assert model.structure.B[1, 1] in ch4.free_symbols
+
+
+class TestEvaluateViews:
+    def test_dict_of_views_preserves_structure(self):
+        model, demand = build_model()
+        gwp = Report.elementary_flows(model.structure).characterise(GWP, name="GWP")
+        views = {"total": gwp.total(), "by_exchange": gwp.by("exchange")}
+        results = evaluate_views(model, views, {demand: 100})
+        assert float(results["total"]) == pytest.approx(EXPECTED_GWP)
+        assert float(results["by_exchange"]["CH4"]) == pytest.approx(7.5 * 28)
+
+    def test_dataframe_values_evaluated(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure)
+        table = evaluate_views(model, rep.table, {demand: 100})
+        rows = {(r.exchange, r.process): float(r.value) for r in table.itertuples()}
         assert rows[("CO2", "Dirty")] == pytest.approx(150)
 
 
-class TestRawPath:
-    """The lazy/raw flows path: expressions with intermediates unresolved,
-    resolved once via lambdify (or eval) instead of eagerly per row."""
-
-    def test_raw_flows_resolve_to_eager_values(self):
+class TestLambdifyViews:
+    def test_matches_substitution_path(self):
         model, demand = build_model()
-        eager = model.to_elementary_flows(values={demand: 100})
-        raw = model.to_elementary_flows(raw=True)
-        resolved = {
-            (r.exchange, r.process): float(model.eval(r.value, {demand: 100}))
-            for r in raw.itertuples()
-        }
-        for r in eager.itertuples():
-            assert resolved[(r.exchange, r.process)] == pytest.approx(float(r.value))
+        staged = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        gwp = staged.characterise(GWP, name="GWP")
+        views = {"total": gwp.total(), "by_stage": gwp.by("stage")}
 
-    def test_raw_with_values_raises(self):
-        model, demand = build_model()
-        with pytest.raises(ValueError):
-            model.to_elementary_flows(values={demand: 100}, raw=True)
-
-    def test_raw_aggregate_feeds_single_lambdify(self):
-        model, demand = build_model()
-        rep = Reporting(model, characterisations={"GWP": GWP})
-        raw_total = rep.aggregate("GWP", raw=True)
-        func = model.lambdify(expressions={"total": raw_total})
-        assert func({demand: 100})["total"] == pytest.approx(
-            rep.aggregate("GWP", values={demand: 100})
-        )
-
-    def test_raw_grouped_aggregate_feeds_single_lambdify(self):
-        model, demand = build_model()
-        rep = Reporting(model, groupings={"stage": {"upstream": {"Dirty", "Clean"}}})
-        raw_series = rep.aggregate(None, by=("stage", "exchange"), raw=True)
-        exprs = {k: v for k, v in raw_series.items()}
-        func = model.lambdify(expressions=exprs)
-        numeric = rep.aggregate(None, by=("stage", "exchange"), values={demand: 100})
+        func = lambdify_views(model, views)
         results = func({demand: 100})
-        for key, expected in numeric.items():
-            assert results[key] == pytest.approx(expected)
+        expected = evaluate_views(model, views, {demand: 100})
+
+        assert results["total"] == pytest.approx(float(expected["total"]))
+        pd.testing.assert_index_equal(
+            results["by_stage"].index, expected["by_stage"].index
+        )
+        for key in expected["by_stage"].index:
+            assert results["by_stage"][key] == pytest.approx(
+                float(expected["by_stage"][key])
+            )
+
+    def test_single_expression(self):
+        model, demand = build_model()
+        total = Report.elementary_flows(model.structure).characterise(GWP).total()
+        func = lambdify_views(model, total)
+        assert func({demand: 100}) == pytest.approx(EXPECTED_GWP)
+
+    def test_multiindex_series_reassembled(self):
+        model, demand = build_model()
+        rep = Report.elementary_flows(model.structure).with_group("stage", STAGES, on="process")
+        series = rep.by("stage", "exchange")
+        func = lambdify_views(model, series)
+        result = func({demand: 100})
+        assert result[("upstream", "CO2")] == pytest.approx(EXPECTED_CO2)
+
+    def test_compiled_function_reusable_across_values(self):
+        model, demand = build_model()
+        func = lambdify_views(
+            model, Report.elementary_flows(model.structure).characterise(GWP).total()
+        )
+        assert func({demand: 100}) == pytest.approx(EXPECTED_GWP)
+        assert func({demand: 200}) == pytest.approx(2 * EXPECTED_GWP)
 
 
 class TestProductionConsumption:
-    """production()/consumption(): the technosphere analogue of aggregate(),
-    a group-by over (process, object) cells instead of (process, exchange)
-    cells."""
+    """production()/consumption(): technosphere flow tables reported with the
+    same machinery as elementary flows."""
 
-    def test_production_scalar(self):
+    def test_production_total(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        total = rep.production("out", values={demand: 100})
-        assert total == pytest.approx(100)
+        total = evaluate_views(model, Report.production(model.structure, "out").total(), {demand: 100})
+        assert float(total) == pytest.approx(100)
 
-    def test_consumption_scalar(self):
+    def test_consumption_total(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        total = rep.consumption("out", values={demand: 100})
-        assert total == pytest.approx(100)
+        total = evaluate_views(model, Report.consumption(model.structure, "out").total(), {demand: 100})
+        assert float(total) == pytest.approx(100)
 
     def test_production_by_process(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        result = rep.production("out", by="process", values={demand: 100})
-        assert isinstance(result, pd.Series)
-        assert result["Dirty"] == pytest.approx(75)
-        assert result["Clean"] == pytest.approx(25)
+        result = evaluate_views(
+            model, Report.production(model.structure, "out").by("process"), {demand: 100}
+        )
+        assert float(result["Dirty"]) == pytest.approx(75)
+        assert float(result["Clean"]) == pytest.approx(25)
 
     def test_consumption_by_declared_grouping(self):
         model, demand = build_model()
-        rep = Reporting(
-            model,
-            groupings={"stage": {"upstream": {"Dirty", "Clean"}, "downstream": {"Use"}}},
-        )
-        result = rep.consumption("out", by="stage", values={demand: 100})
-        assert result["downstream"] == pytest.approx(100)
+        rep = Report.consumption(model.structure, "out").with_group("stage", STAGES, on="process")
+        result = evaluate_views(model, rep.by("stage"), {demand: 100})
+        assert float(result["downstream"]) == pytest.approx(100)
 
     def test_production_by_stage_symbolic(self):
         model, demand = build_model()
-        rep = Reporting(
-            model, groupings={"stage": {"upstream": {"Dirty", "Clean"}}}
-        )
-        result = rep.production("out", by="stage")
+        rep = Report.production(model.structure, "out").with_group("stage", STAGES, on="process")
+        result = evaluate_views(model, rep.by("stage"))
         assert float(result["upstream"].subs(demand, 100)) == pytest.approx(100)
 
-    def test_limit_to_processes(self):
+    def test_filter_limits_processes(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        total = rep.production(
-            "out", limit_to_processes={"Dirty"}, values={demand: 100}
-        )
-        assert total == pytest.approx(75)
+        rep = Report.production(model.structure, "out").filter(process={"Dirty"})
+        total = evaluate_views(model, rep.total(), {demand: 100})
+        assert float(total) == pytest.approx(75)
 
-    def test_raw_feeds_single_lambdify(self):
+    def test_lambdify_path(self):
         model, demand = build_model()
-        rep = Reporting(model)
-        raw_total = rep.consumption("out", raw=True)
-        func = model.lambdify(expressions={"total": raw_total})
-        assert func({demand: 100})["total"] == pytest.approx(
-            rep.consumption("out", values={demand: 100})
-        )
-
-    def test_grouping_by_exchange_axis_rejected(self):
-        model, demand = build_model()
-        rep = Reporting(
-            model, groupings={"ghg_kind": {"fossil": {"CO2"}, "other": {"CH4"}}}
-        )
-        with pytest.raises(ValueError):
-            rep.production("out", by="ghg_kind")
-
-
-class TestNamedTotals:
-    def test_define_and_evaluate_total(self):
-        model, demand = build_model()
-        rep = Reporting(
-            model,
-            groupings={"stage": {"upstream": {"Dirty", "Clean"}}},
-            characterisations={"GWP": GWP},
-        )
-        rep.define_total("GWP_total", characterisation="GWP")
-        rep.define_total("GWP_by_stage", characterisation="GWP", by="stage")
-
-        results = rep.totals(values={demand: 100})
-        assert results["GWP_total"] == pytest.approx(rep.aggregate("GWP", values={demand: 100}))
-        pd.testing.assert_series_equal(
-            results["GWP_by_stage"].sort_index(),
-            rep.aggregate("GWP", by="stage", values={demand: 100}).sort_index(),
-        )
-
-    def test_total_single_lookup(self):
-        model, demand = build_model()
-        rep = Reporting(model, characterisations={"GWP": GWP})
-        rep.define_total("GWP_total", characterisation="GWP")
-        assert rep.total("GWP_total", values={demand: 100}) == pytest.approx(
-            rep.aggregate("GWP", values={demand: 100})
-        )
+        func = lambdify_views(model, Report.consumption(model.structure, "out").total())
+        assert func({demand: 100}) == pytest.approx(100)

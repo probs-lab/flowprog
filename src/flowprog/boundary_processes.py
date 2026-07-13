@@ -158,6 +158,7 @@ def add_boundary_processes(
                     produces=[spec.object_id],
                     consumes=[],
                     has_stock=False,
+                    exchanges=list(spec.exchanges),
                 )
             )
             recipe_fragment[process_id] = {
@@ -172,6 +173,7 @@ def add_boundary_processes(
                     produces=[],
                     consumes=[spec.object_id],
                     has_stock=False,
+                    exchanges=list(spec.exchanges),
                 )
             )
             recipe_fragment[process_id] = {

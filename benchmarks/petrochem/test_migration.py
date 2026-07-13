@@ -139,7 +139,7 @@ def test_elementary_flows_expr_sums_Y_times_B_over_group():
     """expr("ElementaryFlows", exchange_id=e, limit_to_processes=group)
     constructs exactly sum(Y[j]*B[e,j] for j in group) -- the per-group,
     per-exchange direct-emission sum that calc_emissions() now obtains via
-    Reporting's (stage, exchange) aggregation over the elementary-flow table.
+    the reporting layer's (stage, exchange) view over the elementary-flow table.
     (The un-expanded eval() resolution of such an expression is covered in
     tests/test_elementary_exchanges.py.)"""
     data = load_data()

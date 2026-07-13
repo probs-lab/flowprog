@@ -43,7 +43,12 @@ def MExchange(id, *args, **kwargs):
 
 def build_toy_model():
     processes = [
-        Process("Smelting", produces=["MetalA", "MetalB"], consumes=["Ore"]),
+        Process(
+            "Smelting",
+            produces=["MetalA", "MetalB"],
+            consumes=["Ore"],
+            exchanges=["CO2"],
+        ),
     ]
     objects = [
         MObject("Ore", has_market=True),
@@ -222,7 +227,7 @@ class TestZeroSupplyObject:
     def test_zero_supply_gives_nan_with_warning(self, caplog):
         import logging
 
-        processes = [Process("P1", produces=["out"], consumes=[])]
+        processes = [Process("P1", produces=["out"], consumes=[], exchanges=["CO2"])]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
         builder = ModelBuilder(processes, objects, exchanges)
@@ -237,8 +242,8 @@ class TestZeroSupplyObject:
 
     def test_nan_does_not_propagate_to_unrelated_objects(self):
         processes = [
-            Process("P1", produces=["out1"], consumes=[]),
-            Process("P2", produces=["out2"], consumes=[]),
+            Process("P1", produces=["out1"], consumes=[], exchanges=["CO2"]),
+            Process("P2", produces=["out2"], consumes=[], exchanges=["CO2"]),
         ]
         objects = [MObject("out1", has_market=True), MObject("out2", has_market=True)]
         exchanges = [MExchange("CO2")]
@@ -257,7 +262,7 @@ class TestZeroSupplyObject:
 
 class TestNegativeMuNotClipped:
     def test_negative_B_gives_negative_mu(self):
-        processes = [Process("P1", produces=["out"], consumes=[])]
+        processes = [Process("P1", produces=["out"], consumes=[], exchanges=["CO2"])]
         objects = [MObject("out", has_market=True)]
         exchanges = [MExchange("CO2")]
         builder = ModelBuilder(processes, objects, exchanges)
@@ -276,7 +281,7 @@ class TestLinearModelEquivalence:
     def test_mu_matches_unit_pull(self):
         processes = [
             Process("MakeMid", produces=["mid"], consumes=["raw"]),
-            Process("MakeOut", produces=["out"], consumes=["mid"]),
+            Process("MakeOut", produces=["out"], consumes=["mid"], exchanges=["CO2"]),
         ]
         objects = [
             MObject("raw", has_market=True),
@@ -330,9 +335,11 @@ class TestRecyclateLoop:
 
     def _model(self):
         processes = [
-            Process("Virgin", produces=["Product"], consumes=["Raw"]),
+            Process("Virgin", produces=["Product"], consumes=["Raw"], exchanges=["CO2"]),
             Process("Use", produces=["Waste"], consumes=["Product"]),
-            Process("Recycling", produces=["Product"], consumes=["Waste"]),
+            Process(
+                "Recycling", produces=["Product"], consumes=["Waste"], exchanges=["CO2"]
+            ),
         ]
         objects = [
             MObject("Raw", has_market=True),

@@ -3,8 +3,9 @@ ModelStructure: Immutable structure (processes, objects, symbols, lookups)
 """
 
 from typing import Optional, Container
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from rdflib import URIRef
+import pandas as pd
 import sympy as sy
 import logging
 
@@ -19,18 +20,26 @@ class Process:
     :param produces: Identifiers of objects that this process produces.
     :param consumes: Identifiers of objects that this process consumes.
     :param has_stock: Whether objects can accumulate within this process.
+    :param exchanges: Identifiers of elementary exchanges this process can
+        have.
 
     If `has_stock` is `True`, the model will ensure that when the output of the
     process is determined, the input to the process must be equal, and vice
     versa. Otherwise setting the output of the process does not automatically
     imply the value of inputs until the change in internal stock level is also
     specified.
+
+    The produces / consumes / exchanges sets define the sparsity of the model,
+    so that symbolic expressions include only the flows that can actually exist
+    in the model.
+
     """
 
     id: str
     produces: list[str]
     consumes: list[str]
     has_stock: bool = False
+    exchanges: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -59,8 +68,9 @@ class ElementaryExchange:
     :param id: Identifier for the exchange, e.g. "CO2", "CH4", "GHG_upstream_CO2e".
     :param metric: URI identifying the metric used to quantify this exchange.
 
-    There is no per-Process list of exchanges (unlike `produces`/`consumes` for
-    Objects); sparsity is implied by recipe data (the B matrix) instead.
+    Which processes can have which exchanges is declared per-process (see
+    `Process.exchanges`), mirroring `produces`/`consumes` for the S/U
+    matrices; recipe data (the B matrix) provides specific values later.
 
     """
 
@@ -121,6 +131,13 @@ class ModelStructure:
                 idx = self._obj_name_to_idx[obj_name]
                 processes_consuming_object.setdefault(idx, [])
                 processes_consuming_object[idx].append(j)
+
+            for exchange_id in p.exchanges:
+                if exchange_id not in self._exchange_name_to_idx:
+                    raise ValueError(
+                        f"Process {p.id!r} declares unknown elementary "
+                        f"exchange {exchange_id!r}"
+                    )
 
         self._processes_producing_object = processes_producing_object
         self._processes_consuming_object = processes_consuming_object
@@ -205,6 +222,80 @@ class ModelStructure:
             self.processes[j].id for j in self._processes_consuming_object.get(i, [])
         ]
 
+    def flow_table(self) -> pd.DataFrame:
+        """Tidy table of technosphere flows, with structural values.
+
+        One row per (process, produced object) -- value ``Y[j] * S[i, j]``,
+        oriented process -> object -- and per (process, consumed object) --
+        value ``X[j] * U[i, j]``, oriented object -> process.
+
+        The structural symbols in the table can be evaluated against specific
+        recipe data and model state, using e.g. via
+        `flowprog.reporting.evaluate_views`.
+
+        :return: DataFrame with columns source, target, material, metric, value
+
+        """
+        rows = []
+        # All production rows first, then all consumption rows (matching the
+        # historical SympyModel.to_flows ordering).
+        for j, process in enumerate(self.processes):
+            for object_id in process.produces:
+                i = self._obj_name_to_idx[object_id]
+                rows.append(
+                    (
+                        process.id,
+                        object_id,
+                        object_id,
+                        self.objects[i].metric,
+                        self.Y[j] * self.S[i, j],
+                    )
+                )
+        for j, process in enumerate(self.processes):
+            for object_id in process.consumes:
+                i = self._obj_name_to_idx[object_id]
+                rows.append(
+                    (
+                        object_id,
+                        process.id,
+                        object_id,
+                        self.objects[i].metric,
+                        self.X[j] * self.U[i, j],
+                    )
+                )
+        return pd.DataFrame(
+            rows, columns=["source", "target", "material", "metric", "value"]
+        )
+
+    def elementary_flow_table(self) -> pd.DataFrame:
+        """Tidy table of elementary exchange flows, with *structural* values.
+
+        One row per declared (exchange, process) cell (see
+        `Process.exchanges`), with value ``Y[j] * B[e, j]`` -- purely
+        structural symbols, independent of any backend or recipe data. This
+        is the general form of the elementary-flow table that
+        `flowprog.reporting` builds on: aggregate the values symbolically,
+        then resolve them through whichever backend evaluates the model
+        (e.g. ``SympyModel.eval``/``lambdify``, or a forward-run
+        ``NumpyroState``); a declared cell with no recipe value persists as a
+        symbol (like S/U), until recipe data provides a value.
+
+        :return: DataFrame with columns exchange, process, metric, value
+        """
+        rows = []
+        for j, process in enumerate(self.processes):
+            for exchange_id in process.exchanges:
+                e = self.lookup_exchange(exchange_id)
+                rows.append(
+                    (
+                        exchange_id,
+                        process.id,
+                        self.elementary_exchanges[e].metric,
+                        self.Y[j] * self.B[e, j],
+                    )
+                )
+        return pd.DataFrame(rows, columns=["exchange", "process", "metric", "value"])
+
     def expr(
         self,
         role: str,
@@ -280,8 +371,10 @@ class ModelStructure:
 
         elif role == "ElementaryFlows":
             assert exchange_id is not None
-            e = self.lookup_exchange(exchange_id)
-            pids = range(len(self.processes))
+            self.lookup_exchange(exchange_id)
+            # Only processes declaring the exchange contribute (structural
+            # B sparsity, mirroring SoldProduction/Consumption above).
+            pids = self._processes_declaring_exchange(exchange_id)
             if limit_to_processes is not None:
                 pids = [j for j in pids if self.processes[j].id in limit_to_processes]
             return sum(  # type: ignore
@@ -318,13 +411,19 @@ class ModelStructure:
         )
         return flow_in - flow_out
 
+    def _processes_declaring_exchange(self, exchange_id: str) -> list[int]:
+        """Process indices whose `Process.exchanges` includes `exchange_id`.
+        """
+        return [j for j, p in enumerate(self.processes) if exchange_id in p.exchanges]
+
     def _compute_elementary_balance(self, exchange_id, values):
-        """Compute Sum_j B[e, j] * Y[j] for an exchange from accumulated values."""
+        """Compute Sum_j B[e, j] * Y[j] over processes declaring the exchange.
+        """
         e = self.lookup_exchange(exchange_id)
         return sum(
             (
                 self.B[e, j] * values.get(self.Y[j], sy.S.Zero)
-                for j in range(len(self.processes))
+                for j in self._processes_declaring_exchange(exchange_id)
             ),
             sy.S.Zero,
         )

@@ -85,29 +85,31 @@ All 71 processes in `processes_with_elec_req` get real `U[Electricity or
 LowCarbonElectricity, j]` and `U[ProcessHeat, j]` technosphere entries (the
 same `ElecReq_<process>` / `NGReq_<process>` symbols the ad-hoc calculation
 already used). `calc_utility_requirements()` reads these straight off U via
-`Reporting.consumption("Electricity"/"LowCarbonElectricity"/"ProcessHeat",
-by="stage")` -- the technosphere analogue of `Reporting.aggregate()`'s
-elementary-flow group-by -- instead of reconstructing the `ElecReq_<process>`
-symbol names by hand. `model_polymers.py`'s `dispatch_boundary_processes()`
+`Report.consumption(model, "Electricity"/"LowCarbonElectricity"/"ProcessHeat")`
+grouped `.by("stage")` -- the technosphere analogue of the elementary-flow
+group-by -- instead of reconstructing the `ElecReq_<process>` symbol names by
+hand. `model_polymers.py`'s `dispatch_boundary_processes()`
 pulls the remaining production deficit of every boundary-supplied object
 through its `Source` process (canonical pattern, plan section 3.2), closing
 each of these 12 markets exactly -- `test_migration.py::
 test_boundary_supplied_objects_balance_after_dispatch` checks this.
 
-`calc_emissions()` is a pure consumer of one shared `Reporting` -- it takes no
-model handle at all; every result is an aggregation over the (utility-
-reattributed) elementary-flow table. Utility burdens sit on shared `Source`
-processes rather than being distributed per-consumer, so the per-lifecycle-
-stage breakdown goes through `flowprog.allocation.PassThrough`: each utility
-Source's burden is reattributed to its direct consumers in proportion to
-consumption (scope-limited allocation, closed-form and symbolic for these
-input-less single-supplier Sources). Two stage pivots then do most of the
-work:
+`calc_emissions()` consumes one shared `Report` over the (utility-reattributed)
+elementary-flow table. Utility burdens sit on shared `Source` processes rather
+than being distributed per-consumer, so the per-lifecycle-stage breakdown goes
+through `flowprog.allocation.PassThrough`: each utility Source's burden is
+reattributed to its direct consumers in proportion to consumption
+(scope-limited allocation, closed-form and symbolic for these input-less
+single-supplier Sources). The reporting layer has no pass-through knowledge --
+`PassThrough.elementary_flows()` is simply dropped into
+`Report.elementary_flows(model, table)` in place of the model's own table.
+Two stage pivots then do most of the work:
 
-- an uncharacterised `aggregate(None, by=("stage", "exchange"))` for the
-  per-gas direct emissions (`Emissions_DirectProcess_{CO2,CH4,N2O}_*`) and the
-  `CO2_captured` diagnostic that the `CCS` total reads back;
-- a GWP-characterised `aggregate("GWPall", by=("stage", "source"))` -- a
+- an uncharacterised `flows.by("stage", "exchange")` for the per-gas direct
+  emissions (`Emissions_DirectProcess_{CO2,CH4,N2O}_*`) and the `CO2_captured`
+  diagnostic that the `CCS` total reads back (allowed uncharacterised because
+  `"exchange"` is one of the group keys, so no distinct exchanges are summed);
+- a GWP-characterised `flows.characterise(GWP_ALL).by("stage", "source")` -- a
   `source` grouping over exchange ids (`Elec`/`NGCombustion`/`NGWTT`/
   `Feedstock`/`Direct`) plus one `GWP_ALL` characterisation to kgCO2e -- whose
   columns are the per-stage source figures, whose column sums are
@@ -119,9 +121,10 @@ processes carrying `DirProcEmis_*` entries have `CO2`/`CH4`/`N2O` cells, so the
 `stage` grouping alone selects them. Feedstocks read straight off
 `GHG_upstream_Feedstock` (producer-side, not reattributed): per group from a
 `feedstock_group` grouping derived from the `FEEDSTOCKS` table, per object from
-`aggregate(None, by=("process", "exchange"))`, and `FeedstockInput_*` from
-`Reporting.production(object, limit_to_processes=[supplying process])` (the
-limit is load-bearing -- `Naphtha` is also co-produced by chemical recycling).
+`flows.by("process", "exchange")`, and `FeedstockInput_*` from
+`Report.production(model, object).filter(process=supplying process).total()`
+(the filter is load-bearing -- `Naphtha` is also co-produced by chemical
+recycling).
 
 CCS tracking follows the implementation plan's section 4 pattern directly:
 every abated B entry (direct process emissions in
@@ -146,9 +149,9 @@ the model's single closing `lambdify(expressions=other_results)` call:
 values and recipe values (read directly via `get_recipe_as_symbols()`)
 without expanding intermediates -- the same fix that was also needed inside
 `flowprog.allocation` for `Allocation` to run on this model in ~10s rather
-than hanging -- and `Reporting`/`PassThrough` build raw tables the same way
+than hanging -- and `Report`/`PassThrough` build raw tables the same way
 via `to_elementary_flows(raw=True)`. The remaining eager paths,
-`Reporting.table()` and `to_elementary_flows()` without `raw=True`, still
+`Report.evaluate()` and `to_elementary_flows()` without `raw=True`, still
 have this characteristic at this model's scale.
 
 ### Deliberate reference-value changes

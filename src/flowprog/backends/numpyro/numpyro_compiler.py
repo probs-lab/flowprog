@@ -326,6 +326,12 @@ def _normalize_recipe(structure, recipe_data):
             for obj_id, val in flows["consumes"].items():
                 i = structure.lookup_object(obj_id)
                 result[structure.U[i, j]] = float(val)
+        if "exchanges" in flows:
+            # Elementary exchanges (B matrix) -- like S/U, only numeric
+            # values are supported as JAX constants for now.
+            for exchange_id, val in flows["exchanges"].items():
+                e = structure.lookup_exchange(exchange_id)
+                result[structure.B[e, j]] = float(val)
 
     return result
 

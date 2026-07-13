@@ -37,3 +37,16 @@ place where cradle-to-gate / embodied emissions are linked into the model.
     :members:
 ```
 
+## Reporting
+
+```{eval-rst}
+.. automodule:: flowprog.reporting
+    :members:
+```
+
+## Allocation
+
+```{eval-rst}
+.. automodule:: flowprog.allocation
+    :members:
+```

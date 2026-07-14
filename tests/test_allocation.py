@@ -71,12 +71,7 @@ def build_toy_model():
     metal_a_demand = sy.Symbol("metal_a_demand", positive=True)
     builder.add(
         builder.pull_process_output(
-            "Smelting", "MetalA", metal_a_demand, until_objects=["Ore"]
-        )
-    )
-    builder.add(
-        builder.pull_process_output(
-            "ImportsOfOre", "Ore", builder.object_production_deficit("Ore")
+            "Smelting", "MetalA", metal_a_demand
         )
     )
     builder.add(
@@ -130,6 +125,17 @@ class TestToyAnalyticMassAllocation:
         model, demand = build_toy_model()
         values = {demand: 12}
         result = Allocation(model, values, MassAllocation()).result
+
+        # Demand 12 --> Y_Smelting = 12/0.6 = 20.
+        # Ore production = 20 * 2 = 40.
+        #
+        # CO2 from Ore imports = 40 * 10 = 400, intensity 10.
+        #
+        # CO2 from Smelting = 5 * 20 = 100, so intensity = (400 + 100)/20 = 25
+        # for the process.
+        #
+        # Object intensities are then 400/40=10 for Ore and 25*0.6/0.6 = 25
+        # (allocated) for MetalA, and similarly for MetalB.
 
         mu = result.object_intensities
         assert mu.loc["Ore", "CO2"] == pytest.approx(10)
@@ -300,11 +306,6 @@ class TestLinearModelEquivalence:
 
         demand = sy.Symbol("demand", positive=True)
         builder.add(builder.pull_production("out", demand, until_objects=[]))
-        builder.add(
-            builder.pull_process_output(
-                "ImportsOfraw", "raw", builder.object_production_deficit("raw")
-            )
-        )
 
         recipe = {
             "MakeMid": {"consumes": {"raw": 2.0}, "produces": {"mid": 1.0}},
@@ -319,11 +320,6 @@ class TestLinearModelEquivalence:
         # Compare to pulling a unit demand of "out" directly and summing elementary flows
         builder2 = ModelBuilder.from_structure(structure)
         builder2.add(builder2.pull_production("out", sy.S.One, until_objects=[]))
-        builder2.add(
-            builder2.pull_process_output(
-                "ImportsOfraw", "raw", builder2.object_production_deficit("raw")
-            )
-        )
         model2 = builder2.build(recipe)
         total_co2 = model2.eval(model2.structure.ElementaryBalance[0])
 

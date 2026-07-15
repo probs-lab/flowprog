@@ -887,8 +887,22 @@ def add_other_consumption(model):
             label=f"Additional non-polymer demand for {name}",
         )
 
-
 PROCESS_GROUPS = {
+    "feedstocks": {
+        "OilRefiningButane",
+        "OilRefiningEthane",
+        "OilRefiningNaphtha",
+        "OilRefiningPropane",
+        "SourceOfCapturedCarbonDioxide",
+        "SourceOfCoal",
+        "SourceOfCornStover",
+        "SourceOfMaize",
+        "SourceOfNaturalGas",
+        "SourceOfRiceStraw",
+        "SourceOfSugarCane",
+        "SourceOfSugarCaneBagasse",
+        "SourceOfWheatStraw",
+    },
     "green_hydrogen": {
         "WaterElectrolysisForHydrogen",
     },
@@ -1000,15 +1014,6 @@ GWP_ALL = {
     FEEDSTOCK_EXCHANGE_ID: 1,
 }
 
-# Feedstock supplying processes grouped by emissions-reporting group, from the
-# FEEDSTOCKS table (structure.py).
-FEEDSTOCK_GROUPS = list(dict.fromkeys(f.group for f in FEEDSTOCKS))
-FEEDSTOCK_GROUPING = {
-    group: {f.process_id for f in FEEDSTOCKS if f.group == group}
-    for group in FEEDSTOCK_GROUPS
-}
-
-
 def abatement_for_process(process_id):
     if process_id == "Incineration":
         return 1 - a_ccs_incineration
@@ -1096,17 +1101,16 @@ def calc_flow_summaries(structure):
     results = {}
 
     # Total polymer production, split by route: virgin (PolymerisationOf*) vs
-    # recycled (MechanicalRecyclingOf*AtEOL). Each is a Report.production()
-    # total filtered to the one producing process, mirroring the feedstock
-    # reads.
+    # recycled (MechanicalRecyclingOf*AtEOL).
+    production = Report.production(structure)
     results["Production_polymers_virgin"] = sum(
-        Report.production(structure, polymer).filter(process=process).total()
+        production.filter(object=polymer, process=process).total()
         for polymer, process in zip(polymer_objects, polymerisation_processes)
     )
     results["Production_polymers_recycled"] = sum(
-        Report.production(structure, polymer)
-        .filter(process=f"MechanicalRecyclingOf{polymer}AtEOL")
-        .total()
+        production.filter(
+            object=polymer, process=f"MechanicalRecyclingOf{polymer}AtEOL"
+        ).total()
         for polymer in polymer_objects
         if polymer in RECYCLED_POLYMERS
     )
@@ -1118,7 +1122,7 @@ def calc_flow_summaries(structure):
     return results
 
 
-def calc_utility_requirements(structure, stage_grouping):
+def calc_utility_requirements(structure):
     """Utility (electricity/process-heat) requirements by lifecycle stage.
 
     The technosphere analogue of the elementary-flow aggregation:
@@ -1126,181 +1130,145 @@ def calc_utility_requirements(structure, stage_grouping):
     LowCarbonElectricity/ProcessHeat consumption, reading straight off the
     U[i,j] entries structure.py already populated (the ElecReq_{process_id}/
     NGReq_{process_id} symbols) via Report.consumption() instead of
-    re-deriving those symbol names by hand.
+    re-deriving those symbol names by hand. "Electricity" and
+    "LowCarbonElectricity" are two distinct objects/Sources (see the module
+    docstring), so a "utility" grouping over the object axis combines them
+    into one ElecReq, mirroring the "stage" grouping over the process axis.
     """
 
-    def consumption_by_stage(object_id):
-        return (
-            Report.consumption(structure, object_id)
-            .with_group("stage", stage_grouping, on="process")
-            .by("stage")
-        )
+    utility_grouping = {
+        "ElecReq": {"Electricity", "LowCarbonElectricity"},
+        "NGReq": {"ProcessHeat"},
+    }
+    rep = (
+        Report.consumption(structure)
+        .with_group("utility", utility_grouping, on="object", drop_unmatched=True)
+        .with_group("stage", PROCESS_GROUPS, on="process")
+        .by("utility", "stage")
+    )
 
-    elec = consumption_by_stage("Electricity")
-    low_carbon_elec = consumption_by_stage("LowCarbonElectricity")
-    heat = consumption_by_stage("ProcessHeat")
+    # replicate old structure - don't include "feedstocks" stage
+    stages = [stage for stage in STAGES if stage != "feedstocks"]
 
     other_results = {}
-    for stage in STAGES:
-        other_results[f"ElecReq_{stage}"] = elec.get(
-            stage, sy.S.Zero
-        ) + low_carbon_elec.get(stage, sy.S.Zero)
-        other_results[f"NGReq_{stage}"] = heat.get(stage, sy.S.Zero)
-
-    other_results["ElecReq"] = sum(
-        other_results[f"ElecReq_{stage}"] for stage in STAGES
-    )
-    other_results["NGReq"] = sum(other_results[f"NGReq_{stage}"] for stage in STAGES)
+    for utility in utility_grouping:
+        for stage in stages:
+            other_results[f"{utility}_{stage}"] = rep.get((utility, stage))
+        other_results[utility] = rep.loc[utility].sum()
 
     return other_results
 
 
-def calc_emissions(structure, stage_grouping):
+def calc_emissions(structure):
     """All emissions results, as views over `flows` -- the grouped Report on
     the (utility-reattributed) elementary-flow table.
 
-    Two stage pivots do most of the work. Both run over the same reattributed
-    flows: `flows` wraps PassThrough's table, which moves each utility
-    Source's burden (Electricity/LowCarbonElectricity/ProcessHeat) onto its
-    consuming processes -- so it lands in the consumer's stage, not the
-    Source's -- while direct-emission and feedstock burdens sit producer-side
-    and stay put. Green hydrogen needs no special case: it consumes
-    LowCarbonElectricity (its own object/Source), so its low-carbon EF is
-    routed structurally.
-
-    - `by_stage_exchange` (uncharacterised -- fine, since "exchange" is one
-      of the group keys): the per-gas direct emissions and the CO2_captured
-      diagnostic, which GWP_ALL deliberately drops.
+    - `by_stage_exchange`: the per-gas direct emissions and the CO2_captured
+      diagnostic.
     - `by_stage_source` (GWP_ALL-characterised, exchanges collapsed to source
       categories): every kgCO2e source figure, with CO2/CH4/N2O rolled into
-      one "Direct" column. EmissionsBySource_* are its column sums and
-      EmissionsByStage_* its row sums -- no prefix-scanning a results dict.
+      one "Direct" column.
+
+    EmissionsBySource_* and EmissionsByStage_* are sums over these.
+
     """
 
     results = {}
 
-    process_ids = [p.id for p in structure.processes]
-    feedstock_grouping = Grouping.complete(FEEDSTOCK_GROUPING, process_ids)
-
     pass_through = PassThrough(structure, UTILITY_SOURCE_PROCESSES)
     flows = (
-        Report.elementary_flows(structure, pass_through.elementary_flows())
-        .with_group("stage", stage_grouping, on="process")
-        .with_group("feedstock_group", feedstock_grouping, on="process")
+        Report(pass_through.elementary_flows(), structure)
+        .with_group("stage", PROCESS_GROUPS, on="process")
         .with_group("source", EMISSIONS_SOURCE_GROUPING, on="exchange")
     )
 
-    by_stage_exchange = flows.by("stage", "exchange").to_dict()
-    by_stage_source = (
-        flows.characterise(GWP_ALL, name="GWPall").by("stage", "source").to_dict()
-    )
+    by_stage_exchange = flows.by("stage", "exchange")
+    flows_gwp = flows.characterise(GWP_ALL, name="GWPall")
+    by_stage_source = flows_gwp.by("stage", "source")
+    by_source = flows_gwp.by("source")
+    by_stage = flows_gwp.by("stage")
 
-    def stage_exchange(stage, exchange_id):
-        return by_stage_exchange.get((stage, exchange_id), sy.S.Zero)
-
-    def stage_source(stage, source):
-        return by_stage_source.get((stage, source), sy.S.Zero)
-
-    # Utility emissions by stage -- the source pivot's Elec/NGCombustion/NGWTT
-    # columns (GWP_ALL factor 1, i.e. the already-kgCO2e burden). Process heat
-    # keeps combustion (CCS-abated) and well-to-tank as two distinct sources;
-    # captured CO2 feeds the CCS total below, not a per-stage figure here.
+    # Utility emissions and direct process emissions by stage
     for stage in STAGES:
-        results[f"Emissions_ElecReq_{stage}"] = stage_source(stage, "Elec")
-        combustion = stage_source(stage, "NGCombustion")
-        wtt = stage_source(stage, "NGWTT")
+        if stage == "feedstocks": continue  # replicate old structure
+
+        results[f"Emissions_ElecReq_{stage}"] = by_stage_source.get((stage, "Elec"))
+        combustion = by_stage_source.get((stage, "NGCombustion"))
+        wtt = by_stage_source.get((stage, "NGWTT"))
         results[f"Emissions_NGCombustion_{stage}"] = combustion
         results[f"Emissions_NGWTT_{stage}"] = wtt
         results[f"Emissions_NGReq_{stage}"] = combustion + wtt
 
-    # Direct process emissions by stage: per-gas (unweighted B*Y from the
-    # exchange pivot) plus the GWP-weighted roll-up (the source pivot's
-    # "Direct" column). B-sparsity intersects with the processes that actually
-    # carry direct-emission entries, so no explicit process-group
-    # intersection is needed.
-    for stage in STAGES:
         for ghg in GWP:
-            results[f"Emissions_DirectProcess_{ghg}_{stage}"] = stage_exchange(
-                stage, ghg
-            )
-        results[f"Emissions_DirectProcess_GWP_{stage}"] = stage_source(stage, "Direct")
+            results[f"Emissions_DirectProcess_{ghg}_{stage}"] = \
+                by_stage_exchange.get((stage, ghg))
+        results[f"Emissions_DirectProcess_GWP_{stage}"] = \
+            by_stage_source.get((stage, "Direct"))
 
-    # Stage aggregates (sum over stages).
-    results["Emissions_ElecReq"] = sum(
-        results[f"Emissions_ElecReq_{s}"] for s in STAGES
-    )
-    results["Emissions_NGCombustion"] = sum(
-        results[f"Emissions_NGCombustion_{s}"] for s in STAGES
-    )
-    results["Emissions_NGWTT"] = sum(results[f"Emissions_NGWTT_{s}"] for s in STAGES)
-    results["Emissions_NGReq"] = sum(results[f"Emissions_NGReq_{s}"] for s in STAGES)
-
-    # Total CO2 captured by CCS -- the one exchange GWP_ALL omits. Direct
-    # process emissions and process-heat combustion both carry a captured B
-    # entry on CAPTURED_CO2_EXCHANGE_ID (implementation plan section 4), so
+    # Total CO2 captured by CCS. Direct process emissions and process-heat
+    # combustion both carry a captured B entry on CAPTURED_CO2_EXCHANGE_ID, so
     # "total CCS" is just that column summed across stages.
-    results["CCS"] = sum(
-        stage_exchange(stage, CAPTURED_CO2_EXCHANGE_ID) for stage in STAGES
-    )
+    results["CCS"] = flows.filter(exchange=CAPTURED_CO2_EXCHANGE_ID).total()
 
-    # Feedstock emissions.
+    # Feedstock emissions and consumption.
     #
-    # Units: feedstock EFs are kgCO2e/tonne and mass flows are tonnes. Feedstock
-    # Sources are producer-side (not reattributed, unlike the utility Sources),
-    # so these read straight off GHG_upstream_Feedstock:
-    #  - per group, from the feedstock_group x exchange pivot;
-    #  - per object, from the process x exchange pivot (one process each);
-    #  - FeedstockInput from Report.production() -- the process filter is
-    #    load-bearing: Naphtha is co-produced by chemical recycling, which is
-    #    not fossil feedstock input. (production() == Y[j] here as every
-    #    supplying S is 1.)
-    feedstock_by_group = flows.by("feedstock_group", "exchange").to_dict()
-    feedstock_by_process = flows.by("process", "exchange").to_dict()
-    for group in FEEDSTOCK_GROUPS:
-        results[f"Emissions_Feedstock_{group}"] = feedstock_by_group.get(
-            (group, FEEDSTOCK_EXCHANGE_ID), sy.S.Zero
-        )
+    # Units: feedstock EFs are kgCO2e/tonne and mass flows are tonnes.
+    #
+    # Note that e.g. naphtha is also produced by chemical recycling, so can't
+    # just look at total consumption -- instead measure production from the
+    # supplying boundary processes defined in the FEEDSTOCKS table.
+    feedstock_grouping = Grouping.invert({f.process_id: f.group for f in FEEDSTOCKS})
+    rep_feedstock_emissions = (
+        flows
+        .filter(exchange=FEEDSTOCK_EXCHANGE_ID)
+        .with_group("feedstock_group", feedstock_grouping, on="process", drop_unmatched=True)
+    )
+    feedstock_emissions_by_group = rep_feedstock_emissions.by("feedstock_group")
+    feedstock_emissions_by_process = rep_feedstock_emissions.by("process")
+    feedstock_input = (
+        Report.production(structure)
+        .filter(process={f.process_id for f in FEEDSTOCKS})
+        .by("process")
+    )
+
+    # Translate to original output keys
+    for group in feedstock_grouping:
+        results[f"Emissions_Feedstock_{group}"] = \
+            feedstock_emissions_by_group.get(group)
     for f in FEEDSTOCKS:
-        results[f"FeedstockInput_{f.object_id}"] = (
-            Report.production(structure, f.object_id)
-            .filter(process=f.process_id)
-            .total()
-        )
-        results[f"FeedstockEmissionsByObject_{f.object_id}"] = feedstock_by_process.get(
-            (f.process_id, FEEDSTOCK_EXCHANGE_ID), sy.S.Zero
-        )
+        results[f"FeedstockInput_{f.object_id}"] = \
+            feedstock_input.get(f.process_id, sy.S.Zero)
+        results[f"FeedstockEmissionsByObject_{f.object_id}"] = \
+            feedstock_emissions_by_process.get(f.process_id, sy.S.Zero)
 
-    # Emissions by source -- column sums of the (stage, source) pivot.
-    def source_total(source):
-        return sum(stage_source(stage, source) for stage in STAGES)
-
-    results["EmissionsBySource_Elec"] = source_total("Elec")
-    results["EmissionsBySource_NGCombustion"] = source_total("NGCombustion")
-    results["EmissionsBySource_NGWTT"] = source_total("NGWTT")
-    results["EmissionsBySource_NG"] = source_total("NGCombustion") + source_total(
-        "NGWTT"
+    # Emissions by source
+    results["EmissionsBySource_Elec"] = by_source.get("Elec")
+    results["EmissionsBySource_NGCombustion"] = by_source.get("NGCombustion")
+    results["EmissionsBySource_NGWTT"] = by_source.get("NGWTT")
+    results["EmissionsBySource_NG"] = (
+        by_source.get("NGCombustion") + by_source.get("NGWTT")
     )
-    results["EmissionsBySource_Feedstock"] = source_total("Feedstock")
-    results["EmissionsBySource_Direct"] = source_total("Direct")
+    results["EmissionsBySource_Feedstock"] = by_source.get("Feedstock")
+    results["EmissionsBySource_Direct"] = by_source.get("Direct")
 
-    # Emissions by lifecycle stage -- row sums of the (stage, source) pivot
-    # over the emitting sources. Feedstock is reported as its own pseudo-stage
-    # (below), not folded into the per-stage rows.
-    def stage_total(stage):
-        return sum(
-            stage_source(stage, source)
-            for source in ("Elec", "NGCombustion", "NGWTT", "Direct")
-        )
+    # Synonyms...
+    results["Emissions_ElecReq"] = results["EmissionsBySource_Elec"]
+    results["Emissions_NGCombustion"] = results["EmissionsBySource_NGCombustion"]
+    results["Emissions_NGWTT"] = results["EmissionsBySource_NGWTT"]
+    results["Emissions_NGReq"] = results["EmissionsBySource_NG"]
 
+    # Emissions by lifecycle stage.
+
+    # FIXME: also do this by defining the processes to include?
     results["EmissionsByStage_feedstocks"] = results["EmissionsBySource_Feedstock"]
-    results["EmissionsByStage_hydrogen"] = stage_total("green_hydrogen") + stage_total(
-        "other_hydrogen"
+    results["EmissionsByStage_hydrogen"] = (
+        by_stage.get("green_hydrogen") + by_stage.get("other_hydrogen")
     )
-    results["EmissionsByStage_primary_production"] = stage_total("primary_production")
-    results["EmissionsByStage_biomass"] = stage_total("biomass")
-    results["EmissionsByStage_organic_synthesis"] = stage_total("organic_synthesis")
-    results["EmissionsByStage_downstream"] = stage_total("downstream")
-    results["EmissionsByStage_end_of_life"] = stage_total("end_of_life")
+    results["EmissionsByStage_primary_production"] = by_stage.get("primary_production")
+    results["EmissionsByStage_biomass"] = by_stage.get("biomass")
+    results["EmissionsByStage_organic_synthesis"] = by_stage.get("organic_synthesis")
+    results["EmissionsByStage_downstream"] = by_stage.get("downstream")
+    results["EmissionsByStage_end_of_life"] = by_stage.get("end_of_life")
 
     # For summary stat -- three big groups
     results["GHG_biomass_nonfertiliser"] = results["EmissionsByStage_biomass"]
@@ -1429,36 +1397,16 @@ def define_polymer_model(
     # Populate B (elementary exchange) recipe entries for direct process
     # emissions and explicit-process feedstocks (mutates recipe_data; must
     # happen before the final model.build(recipe_data) call in run_benchmark.py).
+    #
+    # Ultimately, this should be integrated into the original model definition.
     add_direct_emission_and_feedstock_exchanges(
         model, recipe_data, processes_with_direct_emissions
     )
 
-    # Compile the steps added so far to get the accumulated X[j]/Y[j] state,
-    # needed to compute the summary/emissions expressions below. Passing
-    # recipe_data here only *stores* it on the compiled model (set_recipe();
-    # no substitution into the accumulated values happens at build time) --
-    # it's needed so PassThrough/Report below can read recipe values. All
-    # emissions expressions stay raw (intermediates unresolved), deferred to
-    # the final model.lambdify(expressions=other_results) call, which
-    # resolves everything in one efficient, CSE-aware pass.
-    compiled = model.build(recipe_data)
-
-    # One shared Report drives the emissions summaries below: the utility
-    # Source processes' burdens are reattributed to their consumers via
-    # PassThrough (table substitution -- see calc_emissions()'s docstring),
-    # with three grouping columns:
-    #  - "stage": the PROCESS_GROUPS partition + an explicit "other"
-    #    catch-all over the remaining processes (boundary Sources, Use, ...);
-    #  - "source": elementary exchanges grouped into emission-source categories;
-    #  - "feedstock_group": feedstock supplying processes by reporting group.
-    # Characterisation (GWP_ALL -> kgCO2e) is applied per view in
-    # calc_emissions(), not baked in here.
-    process_ids = [p.id for p in compiled.processes]
-    stage_grouping = Grouping.complete(PROCESS_GROUPS, process_ids)
-
-    flow_results = calc_flow_summaries(compiled.structure)
-    utility_reqs = calc_utility_requirements(compiled.structure, stage_grouping)
-    emissions = calc_emissions(compiled.structure, stage_grouping)
+    # Calculate utility requirements and emissions sums
+    flow_results = calc_flow_summaries(model.structure)
+    utility_reqs = calc_utility_requirements(model.structure)
+    emissions = calc_emissions(model.structure)
     other_results = {**flow_results, **utility_reqs, **emissions}
 
     return other_results

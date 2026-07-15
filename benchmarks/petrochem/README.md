@@ -53,10 +53,9 @@ to the model-building logic.
 `GHG_upstream_Feedstock`, `GHG_upstream_Electricity`,
 `GHG_ProcessHeat_Combustion`, `GHG_upstream_ProcessHeat`, `CO2_captured`) and
 builds the full model structure: the 143 processes/111 objects from
-`model_data.json`, plus 3
-new objects (`Electricity`, `LowCarbonElectricity`, `ProcessHeat` -- energy
-metric, not mass, so they don't show up in mass-flow Sankeys) and 12
-generated `Source` boundary processes (via `flowprog.boundary_processes`):
+`model_data.json`, plus 3 new objects (`Electricity`, `LowCarbonElectricity`,
+`ProcessHeat`) and 12 generated `Source` boundary processes (via
+`flowprog.boundary_processes`):
 
 - One per feedstock with no pre-existing supplying process (`NaturalGas`,
   `Coal`, `SugarCane`, `Maize`, `CornStover`, `SugarCaneBagasse`,
@@ -68,10 +67,8 @@ generated `Source` boundary processes (via `flowprog.boundary_processes`):
 - `SourceOfElectricity` / `SourceOfLowCarbonElectricity`, each carrying a
   `GHG_upstream_Electricity` B entry (`EF_Utility_Electricity` and the fixed
   `0.007` respectively). `LowCarbonElectricity` is a distinct object/Source
-  feeding only `WaterElectrolysisForHydrogen` (the green-hydrogen route) --
-  the plan's own worked example (section 3.3) for "distinct qualities are
-  distinct objects with distinct supply processes". Every other process in
-  `processes_with_elec_req` consumes ordinary `Electricity`.
+  feeding only `WaterElectrolysisForHydrogen` (the green-hydrogen route). Every
+  other process in `processes_with_elec_req` consumes ordinary `Electricity`.
 - `SourceOfProcessHeat`, carrying three B entries: `GHG_ProcessHeat_Combustion`
   (abated by `a_ccs_utility_combustion`), `GHG_upstream_ProcessHeat`
   (well-to-tank, unabated), and `CO2_captured` (the complementary
@@ -82,17 +79,20 @@ generated `Source` boundary processes (via `flowprog.boundary_processes`):
   keeps meaning feedstock use only.
 
 All 71 processes in `processes_with_elec_req` get real `U[Electricity or
-LowCarbonElectricity, j]` and `U[ProcessHeat, j]` technosphere entries (the
-same `ElecReq_<process>` / `NGReq_<process>` symbols the ad-hoc calculation
-already used). `calc_utility_requirements()` reads these straight off U via
-`Report.consumption(model, "Electricity"/"LowCarbonElectricity"/"ProcessHeat")`
-grouped `.by("stage")` -- the technosphere analogue of the elementary-flow
-group-by -- instead of reconstructing the `ElecReq_<process>` symbol names by
-hand. `model_polymers.py`'s `dispatch_boundary_processes()`
-pulls the remaining production deficit of every boundary-supplied object
-through its `Source` process (canonical pattern, plan section 3.2), closing
-each of these 12 markets exactly -- `test_migration.py::
-test_boundary_supplied_objects_balance_after_dispatch` checks this.
+LowCarbonElectricity, j]` and `U[ProcessHeat, j]` technosphere entries (the same
+`ElecReq_<process>` / `NGReq_<process>` symbols the ad-hoc calculation already
+used). `calc_utility_requirements()` reads these straight off U via
+`Report.consumption(model)` -- the technosphere analogue of
+`Report.elementary_flows()`, one row per (object, consuming process) -- with a
+`"utility"` grouping over the object axis (`{"ElecReq": {"Electricity",
+"LowCarbonElectricity"}, "NGReq": {"ProcessHeat"}}`) combined with the usual
+`"stage"` grouping over the process axis, then `.by("utility", "stage")`,
+instead of reconstructing the `ElecReq_<process>` symbol names by hand.
+`model_polymers.py`'s `dispatch_boundary_processes()` pulls the remaining
+production deficit of every boundary-supplied object through its `Source`
+process; `test_migration.py::
+test_boundary_supplied_objects_balance_after_dispatch` checks this balances
+correctly.
 
 `calc_emissions()` consumes one shared `Report` over the (utility-reattributed)
 elementary-flow table. Utility burdens sit on shared `Source` processes rather
@@ -122,9 +122,9 @@ processes carrying `DirProcEmis_*` entries have `CO2`/`CH4`/`N2O` cells, so the
 `GHG_upstream_Feedstock` (producer-side, not reattributed): per group from a
 `feedstock_group` grouping derived from the `FEEDSTOCKS` table, per object from
 `flows.by("process", "exchange")`, and `FeedstockInput_*` from
-`Report.production(model, object).filter(process=supplying process).total()`
-(the filter is load-bearing -- `Naphtha` is also co-produced by chemical
-recycling).
+`Report.production(model).filter(object=object, process=supplying
+process).total()` (the process filter is load-bearing -- `Naphtha` is also
+co-produced by chemical recycling).
 
 CCS tracking follows the implementation plan's section 4 pattern directly:
 every abated B entry (direct process emissions in

@@ -147,9 +147,10 @@ NATURAL_GAS_ENERGY_CONTENT_MJ_PER_T = 50400
 
 class _no_boundary_market_warning:
     """Suppress flowprog.boundary_processes' "no market" warning for the
-    duration of one add_boundary_processes() call -- see the comment at its
-    call site in build_structure() for why it's a deliberate false positive
-    here."""
+    duration of one add_boundary_processes() call. This needs to be fixed
+    properly at some point.
+
+    """
 
     def __enter__(self):
         self._logger = logging.getLogger("flowprog.boundary_processes")
@@ -169,6 +170,9 @@ def _symbolize_fragment(builder: ModelBuilder, fragment: dict) -> dict:
     """Convert an ID-based recipe fragment (as returned by
     add_boundary_processes) into the symbol-keyed format used elsewhere in
     this module's recipe_data."""
+
+    # FIXME: this could be avoided with some reorganisation.
+
     symbols = {}
     for process_id, recipe in fragment.items():
         j = builder._lookup_process(process_id)

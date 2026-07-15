@@ -11,7 +11,7 @@ import pytest
 import sympy as sy
 from rdflib import URIRef
 
-from flowprog import ModelBuilder, Process, Object, ElementaryExchange
+from flowprog import ModelBuilder, ModelStructure, Process, Object, ElementaryExchange
 from flowprog.reporting import (
     Grouping,
     Report,
@@ -112,6 +112,10 @@ class TestGrouping:
         assert mapping["Clean"] == "other"
         assert len(caplog.records) == 0
 
+    def test_invert_builds_label_to_ids(self):
+        groups = Grouping.invert({"Dirty": "upstream", "Clean": "upstream", "Use": "downstream"})
+        assert groups == {"upstream": {"Dirty", "Clean"}, "downstream": {"Use"}}
+
 
 class TestReportConstruction:
     def test_elementary_flows_wraps_raw_table(self):
@@ -171,6 +175,50 @@ class TestWithGroup:
         table = pd.DataFrame({"process": ["A", "B"], "value": [sy.S(1), sy.S(2)]})
         rep = Report(table).with_group("g", {"x": {"A", "SomethingElse"}}, on="process")
         assert list(rep.table["g"]) == ["x", "other"]
+
+    def test_filtered_table_does_not_warn_about_ids_outside_it(self, caplog):
+        # The structure's full "object" universe is {elec, water}, but the
+        # table was filtered down to just "elec" -- grouping it shouldn't
+        # warn about "water" not being covered, since it was never here.
+        structure = ModelStructure(
+            processes=[
+                Process("P1", produces=[], consumes=["elec"]),
+                Process("P2", produces=[], consumes=["water"]),
+            ],
+            objects=[MObject("elec"), MObject("water")],
+        )
+        rep = Report.consumption(structure).filter(object="elec")
+        with caplog.at_level(logging.WARNING):
+            rep = rep.with_group("utility", {"ElecReq": {"elec"}}, on="object")
+        assert len(caplog.records) == 0
+        assert list(rep.table["utility"]) == ["ElecReq"]
+
+    def test_drop_unmatched_filters_out_ungrouped_rows(self, caplog):
+        model, demand = build_model()
+        with caplog.at_level(logging.WARNING):
+            rep = Report.elementary_flows(model.structure).with_group(
+                "ghg_kind", {"fossil": {"CO2"}}, on="exchange", drop_unmatched=True
+            )
+        assert len(caplog.records) == 0
+        assert set(rep.table["exchange"]) == {"CO2"}
+        assert set(rep.table["ghg_kind"]) == {"fossil"}
+
+    def test_drop_unmatched_still_checks_disjointness(self):
+        model, demand = build_model()
+        with pytest.raises(ValueError, match="disjoint"):
+            Report.elementary_flows(model.structure).with_group(
+                "g",
+                {"a": {"CO2", "CH4"}, "b": {"CH4"}},
+                on="exchange",
+                drop_unmatched=True,
+            )
+
+    def test_drop_unmatched_still_checks_unknown_ids(self):
+        model, demand = build_model()
+        with pytest.raises(ValueError, match="NotAnId"):
+            Report.elementary_flows(model.structure).with_group(
+                "stage", {"x": {"NotAnId"}}, on="process", drop_unmatched=True
+            )
 
 
 class TestCharacterise:
@@ -382,41 +430,76 @@ class TestProductionConsumption:
 
     def test_production_total(self):
         model, demand = build_model()
-        total = evaluate_views(model, Report.production(model.structure, "out").total(), {demand: 100})
+        rep = Report.production(model.structure).filter(object="out")
+        total = evaluate_views(model, rep.total(), {demand: 100})
         assert float(total) == pytest.approx(100)
 
     def test_consumption_total(self):
         model, demand = build_model()
-        total = evaluate_views(model, Report.consumption(model.structure, "out").total(), {demand: 100})
+        rep = Report.consumption(model.structure).filter(object="out")
+        total = evaluate_views(model, rep.total(), {demand: 100})
         assert float(total) == pytest.approx(100)
 
     def test_production_by_process(self):
         model, demand = build_model()
-        result = evaluate_views(
-            model, Report.production(model.structure, "out").by("process"), {demand: 100}
-        )
+        rep = Report.production(model.structure).filter(object="out")
+        result = evaluate_views(model, rep.by("process"), {demand: 100})
         assert float(result["Dirty"]) == pytest.approx(75)
         assert float(result["Clean"]) == pytest.approx(25)
 
     def test_consumption_by_declared_grouping(self):
         model, demand = build_model()
-        rep = Report.consumption(model.structure, "out").with_group("stage", STAGES, on="process")
+        rep = (
+            Report.consumption(model.structure)
+            .filter(object="out")
+            .with_group("stage", STAGES, on="process")
+        )
         result = evaluate_views(model, rep.by("stage"), {demand: 100})
         assert float(result["downstream"]) == pytest.approx(100)
 
     def test_production_by_stage_symbolic(self):
         model, demand = build_model()
-        rep = Report.production(model.structure, "out").with_group("stage", STAGES, on="process")
+        rep = (
+            Report.production(model.structure)
+            .filter(object="out")
+            .with_group("stage", STAGES, on="process")
+        )
         result = evaluate_views(model, rep.by("stage"))
         assert float(result["upstream"].subs(demand, 100)) == pytest.approx(100)
 
     def test_filter_limits_processes(self):
         model, demand = build_model()
-        rep = Report.production(model.structure, "out").filter(process={"Dirty"})
+        rep = Report.production(model.structure).filter(object="out", process={"Dirty"})
         total = evaluate_views(model, rep.total(), {demand: 100})
         assert float(total) == pytest.approx(75)
 
     def test_lambdify_path(self):
         model, demand = build_model()
-        func = lambdify_views(model, Report.consumption(model.structure, "out").total())
+        rep = Report.consumption(model.structure).filter(object="out")
+        func = lambdify_views(model, rep.total())
         assert func({demand: 100}) == pytest.approx(100)
+
+    def test_consumption_covers_all_objects(self):
+        """consumption() (no object_id) is the technosphere analogue of
+        elementary_flows(): one row per (object, consuming process), across
+        every consumed object -- so groups can span multiple objects, e.g.
+        combining several utility inputs into one requirement."""
+        structure = ModelStructure(
+            processes=[
+                Process("P1", produces=[], consumes=["elec"]),
+                Process("P2", produces=[], consumes=["green_elec"]),
+                Process("P3", produces=[], consumes=["heat"]),
+            ],
+            objects=[MObject("elec"), MObject("green_elec"), MObject("heat")],
+        )
+        rep = Report.consumption(structure).with_group(
+            "utility",
+            {"ElecReq": {"elec", "green_elec"}, "NGReq": {"heat"}},
+            on="object",
+        )
+        result = rep.by("utility")
+        assert set(result.index) == {"ElecReq", "NGReq"}
+        assert result["ElecReq"] == (
+            structure.X[0] * structure.U[0, 0] + structure.X[1] * structure.U[1, 1]
+        )
+        assert result["NGReq"] == structure.X[2] * structure.U[2, 2]

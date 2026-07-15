@@ -140,6 +140,23 @@ class Grouping:
         named = set().union(*groups.values()) if groups else set()
         return {**groups, other_label: set(all_ids) - named}
 
+    @staticmethod
+    def invert(id_to_label: Mapping[str, str]) -> dict[str, set]:
+        """Invert an ``{id: label}`` mapping into the ``{label: {ids}}`` form
+        used by :meth:`build`/:meth:`complete`/:meth:`Report.with_group`.
+
+        For groupings that are naturally known per-id (e.g. one row per id in
+        a table with a group column), this avoids hand-rolling the label ->
+        ids inversion.
+
+        :param id_to_label: id -> label, as already known.
+        :return: label -> ids, suitable for `build()`/`complete()`.
+        """
+        groups: dict[str, set] = {}
+        for id_, label in id_to_label.items():
+            groups.setdefault(label, set()).add(id_)
+        return groups
+
 
 class Report:
     """Immutable symbolic view builder over a tidy table of structural expressions.
@@ -205,40 +222,36 @@ class Report:
         return cls(table, structure=structure)
 
     @classmethod
-    def production(cls, structure, object_id: str) -> "Report":
-        """Report over an object's production (`Y[j]*S[i,j]` per producer).
+    def production(cls, structure, table: Optional[pd.DataFrame] = None) -> "Report":
+        """Report over the structural technosphere production table.
 
-        The technosphere analogue of :meth:`elementary_flows`: one row per
-        producing process, with structural values, so the same grouping/
-        filtering/evaluation machinery applies (e.g. utility requirements
-        by stage).
+        The production-side technosphere analogue of :meth:`elementary_flows`:
+        one row per declared (object, producing process) cell, value
+        ``Y[j]*S[i,j]``, so the same grouping/filtering/evaluation machinery
+        applies (e.g. utility requirements by stage). Restrict to a single
+        object with ``.filter(object=object_id)``.
 
         :param structure: A :class:`~flowprog.ModelStructure`.
+        :param table: Optional replacement flow table of the same shape.
+            Defaults to ``structure.production_flow_table()``.
         """
-        return cls._technosphere(structure, "ProcessOutput", object_id)
+        if table is None:
+            table = structure.production_flow_table()
+        return cls(table, structure=structure)
 
     @classmethod
-    def consumption(cls, structure, object_id: str) -> "Report":
-        """Report over an object's consumption (`X[j]*U[i,j]` per consumer).
+    def consumption(cls, structure, table: Optional[pd.DataFrame] = None) -> "Report":
+        """Report over the structural technosphere consumption table.
 
-        See :meth:`production` -- the same, mirrored for the consumption side.
+        See :meth:`production` -- the same, mirrored for the consumption
+        side (`X[j]*U[i,j]` per (object, consuming process)).
+
+        :param structure: A :class:`~flowprog.ModelStructure`.
+        :param table: Optional replacement flow table of the same shape.
+            Defaults to ``structure.consumption_flow_table()``.
         """
-        return cls._technosphere(structure, "ProcessInput", object_id)
-
-    @classmethod
-    def _technosphere(cls, structure, flow_role: str, object_id: str) -> "Report":
-        process_ids = (
-            structure.producers_of(object_id)
-            if flow_role == "ProcessOutput"
-            else structure.consumers_of(object_id)
-        )
-        values = [
-            structure.expr(flow_role, process_id=pid, object_id=object_id)
-            for pid in process_ids
-        ]
-        table = pd.DataFrame(
-            {"object": object_id, "process": process_ids, "value": values}
-        )
+        if table is None:
+            table = structure.consumption_flow_table()
         return cls(table, structure=structure)
 
     def _derive(self, table: pd.DataFrame, **overrides) -> "Report":
@@ -291,34 +304,53 @@ class Report:
         groups: dict[str, Iterable[str]],
         on: str,
         other_label: str = "other",
+        drop_unmatched: bool = False,
     ) -> "Report":
         """Add a grouping label column derived from an existing id column.
 
-        The grouping is validated with :meth:`Grouping.build`: groups must be
-        disjoint, and ids not covered by any group fall into `other_label`
-        (with a warning). When the id universe for `on` is known from the
-        attached structure (the "process"/"exchange"/"object" columns),
-        group ids are also checked against it.
+        Group ids are checked against the full id universe for `on`, if known
+        from the attached structure (the "process"/"exchange"/"object"
+        columns) -- a typo guard, since referencing a nonexistent id is
+        always a mistake. Coverage (any id *actually in this table* not
+        covered by a group falls into `other_label`, with a warning) is then
+        validated with :meth:`Grouping.build` against just the ids present
+        here -- so ids from the wider structural universe that simply don't
+        appear in this (possibly filtered) table don't trigger a spurious
+        warning; filter before grouping if you want to group only a subset.
 
         :param name: Name of the new label column (used in :meth:`by`).
         :param groups: ``{label: ids}`` -- a partition of the `on` column's ids.
         :param on: Existing column the ids refer to (e.g. "process" or
             "exchange").
-        :param other_label: Label for ids not covered by any group.
+        :param other_label: Label for ids not covered by any group. Ignored
+            if `drop_unmatched` is True.
+        :param drop_unmatched: If True, rows whose `on` id isn't listed in
+            any group are dropped from the table instead of being bucketed
+            into `other_label` -- for when `groups` is deliberately partial
+            (e.g. reporting on a handful of ids of interest) rather than a
+            partition of every id, so leftover ids aren't a typo to warn
+            about.
         """
         if on not in self.table.columns:
             raise ValueError(
                 f"with_group: no column {on!r} in table to group on "
                 f"(columns: {list(self.table.columns)})"
             )
+        declared = {id_ for ids in groups.values() for id_ in ids}
         universe = self._id_universe(on)
-        if universe is None:
-            # No universe known: accept any group ids (they may legitimately
-            # not appear in this table), validate disjointness only.
-            universe = set(self.table[on].dropna()) | {
-                id_ for ids in groups.values() for id_ in ids
-            }
-        mapping = Grouping.build(name, groups, universe, other_label)
+        if universe is not None:
+            unknown = declared - universe
+            if unknown:
+                raise ValueError(
+                    f"with_group {name!r}: group references unknown id(s) {sorted(unknown)}"
+                )
+        present = set(self.table[on].dropna())
+        if drop_unmatched:
+            mapping = Grouping.build(name, groups, present & declared, other_label)
+            table = self.table[self.table[on].isin(mapping)].reset_index(drop=True)
+            labels = [mapping[v] for v in table[on]]
+            return self._derive(table.assign(**{name: labels}))
+        mapping = Grouping.build(name, groups, present | declared, other_label)
         labels = [mapping.get(v, other_label) for v in self.table[on]]
         return self._derive(self.table.assign(**{name: labels}))
 
@@ -391,7 +423,7 @@ class Report:
         if len(keys) == 1:
             # groupby with a length-1 list still yields a flat index
             grouped = grouped.rename_axis(keys[0])
-        return grouped
+        return SympySeries(grouped)
 
     def _check_commensurable(self, keys):
         """Refuse to sum distinct exchange types without a characterisation.
@@ -422,6 +454,17 @@ class Report:
             ".characterise(1) to state that raw values are directly "
             "addable, or include 'exchange' in by()."
         )
+
+
+class SympySeries(pd.Series):
+    """Like pandas Series but default missing value is Sympy zero."""
+
+    @property
+    def _constructor(self):
+        return type(self)
+
+    def get(self, key, default=sy.S.Zero):
+        return super().get(key, default)
 
 
 def evaluate_views(model, views, values: Optional[dict] = None):

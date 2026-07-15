@@ -267,6 +267,55 @@ class ModelStructure:
             rows, columns=["source", "target", "material", "metric", "value"]
         )
 
+    def production_flow_table(self) -> pd.DataFrame:
+        """Tidy table of technosphere production flows, with structural values.
+
+        One row per declared (process, produced object) cell, value ``Y[j] *
+        S[i, j]`` -- the production-side technosphere analogue of
+        `elementary_flow_table()`, for the "object" axis instead of
+        "exchange". Aggregate symbolically with
+        `flowprog.reporting.Report.production`, then resolve as for
+        elementary flows.
+
+        :return: DataFrame with columns object, process, metric, value
+        """
+        rows = []
+        for j, process in enumerate(self.processes):
+            for object_id in process.produces:
+                i = self._obj_name_to_idx[object_id]
+                rows.append(
+                    (
+                        object_id,
+                        process.id,
+                        self.objects[i].metric,
+                        self.Y[j] * self.S[i, j],
+                    )
+                )
+        return pd.DataFrame(rows, columns=["object", "process", "metric", "value"])
+
+    def consumption_flow_table(self) -> pd.DataFrame:
+        """Tidy table of technosphere consumption flows, with structural values.
+
+        One row per declared (process, consumed object) cell, value ``X[j] *
+        U[i, j]``. See `production_flow_table` -- the same, mirrored for the
+        consumption side.
+
+        :return: DataFrame with columns object, process, metric, value
+        """
+        rows = []
+        for j, process in enumerate(self.processes):
+            for object_id in process.consumes:
+                i = self._obj_name_to_idx[object_id]
+                rows.append(
+                    (
+                        object_id,
+                        process.id,
+                        self.objects[i].metric,
+                        self.X[j] * self.U[i, j],
+                    )
+                )
+        return pd.DataFrame(rows, columns=["object", "process", "metric", "value"])
+
     def elementary_flow_table(self) -> pd.DataFrame:
         """Tidy table of elementary exchange flows, with *structural* values.
 

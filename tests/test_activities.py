@@ -297,3 +297,36 @@ class TestLimitCompilation:
         value_limited = model.eval(model.Y[0]).subs({a: 10, b: 5, c: 20, **recipe})
         assert float(value_limited) <= 20.0 + 1e-9
         assert float(value_limited) >= initial_y0 - 1e-9
+
+    def test_eval_substitutes_limit_value(self, chain):
+        """eval(values=...) should substitute parameters passed directly.
+
+        Regression test: a limit() capacity value is embedded directly in the
+        compiled Piecewise (not routed through a CSE intermediate), so eval()
+        used to leave it un-substituted -- it only applied `values` to the
+        intermediate definitions. Passing the limit value via eval's `values`
+        argument must fully resolve the expression.
+        """
+        m = chain
+        m.add(m.pull_production("out", a), label="initial")
+
+        extra = m.pull_production("out", b)
+        m.add(m.limit(extra, m.Y[0], c), label="limited extra")
+
+        model = m.build()
+
+        recipe = {
+            m.U[0, 0]: 1.0, m.S[1, 0]: 0.6,
+            m.U[1, 1]: 2.2, m.S[2, 1]: 2.0,
+        }
+
+        # Pass the limit value `c` directly via eval's `values` argument
+        # (rather than .subs()-ing it afterwards).
+        result = model.eval(model.Y[0], {a: 10, b: 5, c: 100, **recipe})
+
+        # Limit of 100 is well above demand, so it should pass through fully
+        # and the result must be fully numeric (no leftover `c`).
+        assert result.free_symbols == set()
+        initial_y0 = 10 / 2.0 * 2.2 / 0.6
+        extra_y0 = 5 / 2.0 * 2.2 / 0.6
+        assert abs(float(result) - (initial_y0 + extra_y0)) < 1e-9

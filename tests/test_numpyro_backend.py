@@ -2,6 +2,9 @@
 """
 
 import pytest
+
+pytest.importorskip("numpyro")  # optional `numpyro` extra; skip if not installed
+
 import jax
 import jax.numpy as jnp
 import numpyro

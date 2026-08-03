@@ -1,6 +1,10 @@
 """Tests for the NumPyro compiler utils.
 """
 
+import pytest
+
+pytest.importorskip("numpyro")  # optional `numpyro` extra; skip if not installed
+
 import jax.numpy as jnp
 import sympy as sy
 

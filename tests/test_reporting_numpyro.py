@@ -17,8 +17,11 @@ expressions), the *same* view expressions also evaluate through
 ``SympyModel.eval`` -- checked below.
 """
 
-import numpyro.handlers as handlers
 import pytest
+
+pytest.importorskip("numpyro")  # optional `numpyro` extra; skip if not installed
+
+import numpyro.handlers as handlers
 import sympy as sy
 from rdflib import URIRef
 

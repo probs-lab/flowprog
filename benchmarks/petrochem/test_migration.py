@@ -258,16 +258,30 @@ def test_boundary_supplied_objects_balance_after_dispatch():
     )
     model = model_builder.build(recipe_data)
 
-    deficit_exprs = {
-        object_id: model.structure.resolve_structural_symbols(
-            model.structure.ProductionDeficit[model.structure.lookup_object(object_id)],
-            model._values,
+    exprs = {}
+    for object_id in BOUNDARY_SUPPLIED_OBJECTS:
+        i = model.structure.lookup_object(object_id)
+        exprs[object_id] = model.structure.resolve_structural_symbols(
+            model.structure.ProductionDeficit[i], model._values
         )
-        for object_id in BOUNDARY_SUPPLIED_OBJECTS
-    }
-    func = model.lambdify(expressions=deficit_exprs, modules="math")
+        # Production of the same object, to scale the tolerance below against.
+        exprs[(object_id, "produced")] = model.structure.resolve_structural_symbols(
+            model.structure.expr("SoldProduction", object_id=object_id), model._values
+        )
+    func = model.lambdify(expressions=exprs, modules="math")
 
     scenario = next(iter(data["scenarios"].values()))
-    deficits = func(scenario["params"])
+    results = func(scenario["params"])
     for object_id in BOUNDARY_SUPPLIED_OBJECTS:
-        assert float(deficits[object_id]) == pytest.approx(0, abs=1e-6), object_id
+        deficit = float(results[object_id])
+        produced = float(results[(object_id, "produced")])
+        # The deficit is a difference of two market sides that cancel exactly
+        # in exact arithmetic, so the residual is pure floating-point noise and
+        # has to be judged against the size of the flows being differenced --
+        # some of these markets carry ~1e12, where a single ulp is ~1e-4 and a
+        # fixed 1e-6 bound would be a hundred times tighter than double
+        # precision can represent.
+        tolerance = max(abs(produced), 1.0) * 1e-12
+        assert deficit == pytest.approx(0, abs=tolerance), (
+            f"{object_id}: deficit {deficit:g} against production {produced:g}"
+        )

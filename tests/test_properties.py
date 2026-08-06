@@ -11,6 +11,10 @@ from .model_strategies import MObject, model_builder_strategy
        st.floats(min_value=0, max_value=1e20, allow_infinity=False),
        st.floats(min_value=0, max_value=1e20))
 @example(10, 0, 10)
+# A case where the limit binds and the scaled step lands exactly on the limit
+# in exact arithmetic, so the computed value is one ulp above it (~1.6e4 at
+# this magnitude). See the tolerance note below.
+@example(6.091818978422949e18, 9.560492111766518e19, 9.560492111766518e19)
 @settings(deadline=1000)
 def test_limit_with_symbols(initial, consumption, limit_value):
     processes = [
@@ -47,7 +51,14 @@ def test_limit_with_symbols(initial, consumption, limit_value):
     assert value >= initial
     # exceeded = max(0, value - max(initial, limit_value))
     # assert exceeded <= 1e-6
-    expected_max = max(initial / 2.0 * 2.2 / 0.6 * 1.00001 + 1e-3, limit_value)
+    #
+    # The tolerance applies to whichever bound wins. When the limit binds, the
+    # step is scaled by (limit - current)/(proposed - current), which lands on
+    # `limit_value` exactly in exact arithmetic but only to within a rounding
+    # error of it in floating point -- and these values run up to 1e20, where a
+    # single ulp is ~1.6e4. Comparing against a bare `limit_value` would demand
+    # exactness that doubles cannot express.
+    expected_max = max(initial / 2.0 * 2.2 / 0.6, limit_value) * 1.00001 + 1e-3
     assert value <= expected_max
 
     # Also test the lambdify version (trigger divide-by-zero differently?)

@@ -13,9 +13,18 @@ import pandas as pd
 from rdflib import URIRef
 
 from ..model_structure import ModelStructure, Process, Object, ElementaryExchange
-from ..activities import AdditionalActivity, Limit, Floor
+from ..activities import AdditionalActivity, Limit, Floor, create_intermediate
 
 _log = logging.getLogger(__name__)
+
+# Prefix for intermediate symbols minted by the compiler itself, as opposed to
+# those carried on the steps by ModelBuilder (which uses the default "x"
+# prefix of sy.numbered_symbols()).
+_COMPILER_INTERMEDIATE_PREFIX = "_t"
+
+# Expression types that are already O(1) and cannot grow with accumulated
+# state, so are cheaper left inline than routed through an intermediate.
+_TRIVIAL_TYPES = (sy.Symbol, sy.Number, sy.Indexed)
 
 
 class SympyModel:
@@ -47,6 +56,29 @@ class SympyModel:
         """
         values = defaultdict(lambda: sy.S.Zero)
         all_intermediates = []
+        compiler_symbols = sy.numbered_symbols(_COMPILER_INTERMEDIATE_PREFIX)
+
+        def mint(expr, description):
+            """Route `expr` through an intermediate symbol and return the symbol.
+
+            Transformations refer to the accumulated state several times each
+            (as 'current', 'proposed' and the limit/threshold), and the result
+            is accumulated in turn, so inlining those expressions makes each
+            step a multiple of the last -- exponential in the number of steps.
+            Naming them keeps each step's compiled expression a constant size,
+            and (just as importantly) keeps `Piecewise` out of `Piecewise`
+            conditions, where sympy's ExprCondPair runs `piecewise_fold` and
+            `cond.rewrite(ITE)` regardless of `evaluate=False` -- a pass that
+            walks the whole condition and calls `simplify_logic` on it.
+
+            Expressions that are already atomic are returned unchanged: they
+            cost nothing to inline and cannot grow.
+            """
+            if not isinstance(expr, sy.Basic) or isinstance(expr, _TRIVIAL_TYPES):
+                return expr
+            return create_intermediate(
+                all_intermediates, expr, description, compiler_symbols
+            )
 
         for step in steps:
             # 1. Collect intermediates, resolving structural symbols
@@ -65,11 +97,11 @@ class SympyModel:
             for transform in step.transformations:
                 if isinstance(transform, Limit):
                     resolved_values = _compile_limit(
-                        resolved_values, transform, values, structure
+                        resolved_values, transform, values, structure, mint
                     )
                 elif isinstance(transform, Floor):
                     resolved_values = _compile_floor(
-                        resolved_values, transform, values, structure
+                        resolved_values, transform, values, structure, mint
                     )
                 else:
                     raise ValueError(f"Unknown transform {transform}")
@@ -738,7 +770,7 @@ class SympyModel:
         return model
 
 
-def _compile_limit(values_dict, limit_transform, accumulated_values, structure):
+def _compile_limit(values_dict, limit_transform, accumulated_values, structure, mint):
     """Compile a Limit transformation into Piecewise expressions.
 
     The Limit's expression and limit_value contain raw structural symbols.
@@ -746,15 +778,29 @@ def _compile_limit(values_dict, limit_transform, accumulated_values, structure):
     - 'current': structural symbols resolved against accumulated state (before this step)
     - 'proposed': structural symbols resolved against accumulated + this step's contribution
     - 'limit': limit_value resolved against accumulated state
+
+    Each of those, and this step's own contributions, are routed through
+    intermediate symbols by `mint`.
     """
+    # This step's contributions appear twice in each Piecewise below, and again
+    # inside 'proposed'; name them as an intermediate symbol once up front so
+    # all four uses share.
+    values_dict = {k: mint(v, f"limit input for {k}") for k, v in values_dict.items()}
+
     # 'current' = expression evaluated with accumulated values only
-    current = structure.resolve_structural_symbols(
-        limit_transform.expression, accumulated_values
+    current = mint(
+        structure.resolve_structural_symbols(
+            limit_transform.expression, accumulated_values
+        ),
+        f"limit: current value of {limit_transform.expression}",
     )
 
     # 'limit' = limit_value evaluated with accumulated values
-    limit_resolved = structure.resolve_structural_symbols(
-        limit_transform.limit_value, accumulated_values
+    limit_resolved = mint(
+        structure.resolve_structural_symbols(
+            limit_transform.limit_value, accumulated_values
+        ),
+        f"limit: bound {limit_transform.limit_value}",
     )
 
     # 'proposed' = expression evaluated with (accumulated + step contribution)
@@ -772,10 +818,18 @@ def _compile_limit(values_dict, limit_transform, accumulated_values, structure):
                 accumulated_values.get(yj, sy.S.Zero) + values_dict[yj]
             )
 
-    proposed = structure.resolve_structural_symbols(
-        limit_transform.expression, proposed_values
+    proposed = mint(
+        structure.resolve_structural_symbols(
+            limit_transform.expression, proposed_values
+        ),
+        f"limit: proposed value of {limit_transform.expression}",
     )
 
+    # `proposed` and `current` name the same subexpressions the inlined form
+    # would have evaluated, so this subtracts the same two floats as before,
+    # but keeps `safe_diff` a constant size -- which matters because sy.Max()
+    # runs an `equals()` comparison over its arguments that is very slow on
+    # anything Piecewise-laden.
     diff = proposed - current
 
     # Epsilon protection for division by zero (same as original)
@@ -793,7 +847,7 @@ def _compile_limit(values_dict, limit_transform, accumulated_values, structure):
     }
 
 
-def _compile_floor(values_dict, floor_transform, accumulated_values, structure):
+def _compile_floor(values_dict, floor_transform, accumulated_values, structure, mint):
     """Compile a Floor transformation into Piecewise expressions.
 
     The Floor's expression and threshold contain raw structural symbols.
@@ -803,7 +857,12 @@ def _compile_floor(values_dict, floor_transform, accumulated_values, structure):
 
     If proposed >= threshold, the step values pass through unchanged.
     Otherwise they are zeroed out (the process doesn't operate at all).
+
+    As in `_compile_limit`, the resolved expressions are routed through
+    intermediate symbols by `mint`.
     """
+    values_dict = {k: mint(v, f"floor input for {k}") for k, v in values_dict.items()}
+
     # 'proposed' = expression evaluated with (accumulated + step contribution)
     M = len(structure.processes)
     proposed_values = dict(accumulated_values)
@@ -819,13 +878,19 @@ def _compile_floor(values_dict, floor_transform, accumulated_values, structure):
                 accumulated_values.get(yj, sy.S.Zero) + values_dict[yj]
             )
 
-    proposed = structure.resolve_structural_symbols(
-        floor_transform.expression, proposed_values
+    proposed = mint(
+        structure.resolve_structural_symbols(
+            floor_transform.expression, proposed_values
+        ),
+        f"floor: proposed value of {floor_transform.expression}",
     )
 
     # 'threshold' resolved against accumulated state
-    threshold_resolved = structure.resolve_structural_symbols(
-        floor_transform.threshold, accumulated_values
+    threshold_resolved = mint(
+        structure.resolve_structural_symbols(
+            floor_transform.threshold, accumulated_values
+        ),
+        f"floor: threshold {floor_transform.threshold}",
     )
 
     return {

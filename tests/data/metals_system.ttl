@@ -1,0 +1,57 @@
+# The RDF form of `metals_system.md`, in the shape a Sphinx build of those system
+# definitions produces (`sphinx_probs_rdf.directives`), together with the model
+# definition (which processes are in the model, and which objects have markets)
+# that the RDF path needs and system definitions carry implicitly.
+#
+# Written out by hand rather than generated, so that the two loaders are compared
+# against a fixed expectation rather than against each other's quirks.
+
+@prefix model: <http://example.org/model/> .
+@prefix sys: <http://example.org/system/> .
+@prefix probs: <http://w3id.org/probs-lab/ontology#> .
+@prefix recipe: <http://w3id.org/probs-lab/process-recipe#> .
+@prefix quantitykind: <http://qudt.org/vocab/quantitykind/> .
+
+## Model definition
+
+model:Model probs:hasProcess
+  sys:Mining,
+  sys:PowerStation,
+  sys:Smelting.
+
+model:Model probs:hasMarketForObject
+  sys:Electricity,
+  sys:Ore.
+
+## Objects
+
+sys:Electricity probs:objectMetric quantitykind:Energy .
+
+## Processes
+
+sys:Mining recipe:hasRecipe [
+  recipe:produces [ recipe:object sys:Ore ;
+                    recipe:quantity 1.0 ;
+                    recipe:metric quantitykind:Mass ]
+] .
+
+sys:Smelting recipe:hasRecipe [
+  recipe:consumes [ recipe:object sys:Ore ;
+                    recipe:quantity 2.0 ;
+                    recipe:metric quantitykind:Mass ] ,
+                  [ recipe:object sys:Electricity ;
+                    recipe:quantity 3.0 ;
+                    recipe:metric quantitykind:Energy ] ;
+  recipe:produces [ recipe:object sys:Metal ;
+                    recipe:quantity 1.0 ;
+                    recipe:metric quantitykind:Mass ]
+] .
+
+sys:PowerStation recipe:hasRecipe [
+  recipe:consumes [ recipe:object sys:Gas ;
+                    recipe:quantity 0.2 ;
+                    recipe:metric quantitykind:Mass ] ;
+  recipe:produces [ recipe:object sys:Electricity ;
+                    recipe:quantity 1.0 ;
+                    recipe:metric quantitykind:Energy ]
+] .

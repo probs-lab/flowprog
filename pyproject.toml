@@ -11,6 +11,7 @@ authors = [
 dependencies = [
     "sympy>=1.11.1",
     "pandas>=2.2.0",
+    "rdflib>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,16 @@ benchmarks = [
     "brightway25>=1.1.1",
     "scikit-umfpack>=0.4.2",
 ]
+# For flowprog.io.system_definitions: parsing system definitions without a Sphinx
+# build. The `loader` extra is what pulls in myst-parser and markdown-it-py.
+definitions = [
+    "sphinx-probs-rdf[loader]>=0.5.1",
+]
+
+# The loader is not in a released sphinx_probs_rdf yet -- until 0.5.1 is on PyPI, get
+# it from git. Only affects how this project resolves it, not what it declares above.
+[tool.uv.sources]
+sphinx-probs-rdf = { git = "https://github.com/ricklupton/sphinx_probs_rdf", branch = "master" }
 
 [dependency-groups]
 dev = [
@@ -32,12 +43,12 @@ dev = [
     "jupyter-book>=0.15.0,<1.0.0",
     "jupyterlab>=3.6.1",
     "ipysankeywidget>=0.5.0",
-    "sphinx-probs-rdf>=0.5.0",
     "jupytext>=1.14.0",
     "arviz>=0.15",
     "matplotlib>=3.5",
-    "rdflib>=6.0",
     "flowprog[numpyro]",
+    # Also provides the Sphinx extension the docs build uses
+    "flowprog[definitions]",
 ]
 
 [build-system]

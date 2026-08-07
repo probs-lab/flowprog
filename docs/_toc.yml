@@ -9,7 +9,7 @@ chapters:
   sections:
     - file: api-model
     - file: api-exchanges
-    - file: api-load-from-rdf
+    - file: api-io
     - file: serialisation
 - file: examples/energy/index
   sections:

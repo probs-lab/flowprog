@@ -1,19 +1,10 @@
----
-jupytext:
-  text_representation:
-    extension: .md
-    format_name: myst
-    format_version: 0.13
-    jupytext_version: 1.13.8
-kernelspec:
-  display_name: Python 3 (ipykernel)
-  language: python
-  name: python3
---- 
-
 # System definitions
 
-The blocks below serve to document the processes and objects that form the example model structure. Their data is exported in RDF form to `_build/html/output.ttl` every time the documentation Jupyter Book is built (note that this means that the books must be built twice when these definitions change, so that the notebook code sees the latest version of the definitions).
+The `{system:process}` and `{system:object}` blocks below define the processes and objects that make up the system.  This format of definition is equivalent to writing Python code listing the `Process()` and `Object()` declarations directly, but this way is convenient as
+
+- it allows definitions to be grouped into logical sections
+- it gives space to document the definitions and sources of recipe assumptions
+- it can be formatted automatically into a nice human-readable HTML or PDF documentation file
 
 ## EoL technology
 

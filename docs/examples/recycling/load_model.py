@@ -3,14 +3,7 @@ import sympy as sy
 from flowprog import ModelBuilder
 from flowprog.io.system_definitions import load_structure
 
-# The processes and objects are read straight from the definitions, so editing
-# system-definitions.md and re-running this file is enough to see the change.
-#
-# Which processes make up the model, and which objects need markets, are worked out
-# from the definitions too: every process with a recipe is included, and an object
-# gets a market if the model both produces and consumes it -- here EoLTechnology,
-# PCBs and GoldAndPlastic. PureGold, OtherParts and MixedPCBWaste are only produced,
-# so they leave the model boundary unbalanced.
+# Load the model structure
 model_structure, recipe_data = load_structure("system-definitions.md")
 builder = ModelBuilder.from_structure(model_structure)
 
@@ -44,7 +37,16 @@ builder.add(
     label="Step 2 PCBs via Process1"
 )
 
-# To be completed...
+## Step 3: Any residual PCBs handled by Process 2
+
+builder.add(
+    builder.push_consumption(
+        "PCBs", 
+        builder.object_consumption_deficit("PCBs"),
+        allocate_forwards={"PCBs": {"PCBProcess2": 1}},  # equivalently we could have used push_process_input
+    ),
+    label="Step 3 PCBs via Process2",
+)
 
 model = builder.build(recipe_data)
 flows_sym = model.to_flows(recipe_data)

@@ -423,7 +423,7 @@ class ModelStructure:
             self.lookup_exchange(exchange_id)
             # Only processes declaring the exchange contribute (structural
             # B sparsity, mirroring SoldProduction/Consumption above).
-            pids = self._processes_declaring_exchange(exchange_id)
+            pids = self.processes_with_exchange(self.lookup_exchange(exchange_id))
             if limit_to_processes is not None:
                 pids = [j for j in pids if self.processes[j].id in limit_to_processes]
             return sum(  # type: ignore
@@ -441,73 +441,15 @@ class ModelStructure:
         else:
             raise ValueError(f"Unknown role {role!r}")
 
-    def _compute_object_balance(self, object_id, values):
-        """Compute (production - consumption) for an object from accumulated values."""
-        i = self.lookup_object(object_id)
-        flow_in = sum(
-            (
-                self.S[i, j] * values.get(self.Y[j], sy.S.Zero)
-                for j in self._processes_producing_object.get(i, [])
-            ),
-            sy.S.Zero,
-        )
-        flow_out = sum(
-            (
-                self.U[i, j] * values.get(self.X[j], sy.S.Zero)
-                for j in self._processes_consuming_object.get(i, [])
-            ),
-            sy.S.Zero,
-        )
-        return flow_in - flow_out
+    def processes_producing(self, i: int) -> list[int]:
+        """Indices of the processes that produce object `i`."""
+        return self._processes_producing_object.get(i, [])
 
-    def _processes_declaring_exchange(self, exchange_id: str) -> list[int]:
-        """Process indices whose `Process.exchanges` includes `exchange_id`.
-        """
+    def processes_consuming(self, i: int) -> list[int]:
+        """Indices of the processes that consume object `i`."""
+        return self._processes_consuming_object.get(i, [])
+
+    def processes_with_exchange(self, e: int) -> list[int]:
+        """Indices of the processes that declare elementary exchange `e`."""
+        exchange_id = self.elementary_exchanges[e].id
         return [j for j, p in enumerate(self.processes) if exchange_id in p.exchanges]
-
-    def _compute_elementary_balance(self, exchange_id, values):
-        """Compute Sum_j B[e, j] * Y[j] over processes declaring the exchange.
-        """
-        e = self.lookup_exchange(exchange_id)
-        return sum(
-            (
-                self.B[e, j] * values.get(self.Y[j], sy.S.Zero)
-                for j in self._processes_declaring_exchange(exchange_id)
-            ),
-            sy.S.Zero,
-        )
-
-    def resolve_structural_symbols(self, expr, values):
-        """Substitute structural symbols in an expression with their current values.
-
-        Resolves: Balance[i], ProductionDeficit[i], ConsumptionDeficit[i],
-        ElementaryBalance[e], X[j], Y[j]
-
-        """
-        if not isinstance(expr, sy.Basic):
-            return expr
-
-        subs = {}
-        for sym in expr.atoms(sy.Indexed):
-            if sym.base == self.X or sym.base == self.Y:
-                subs[sym] = values.get(sym, sy.S.Zero)
-            elif sym.base == self.Balance:
-                idx = sym.indices[0]
-                obj_id = self.objects[idx].id
-                subs[sym] = self._compute_object_balance(obj_id, values)
-            elif sym.base == self.ProductionDeficit:
-                idx = sym.indices[0]
-                obj_id = self.objects[idx].id
-                balance = self._compute_object_balance(obj_id, values)
-                subs[sym] = sy.Max(0, -balance, evaluate=False)
-            elif sym.base == self.ConsumptionDeficit:
-                idx = sym.indices[0]
-                obj_id = self.objects[idx].id
-                balance = self._compute_object_balance(obj_id, values)
-                subs[sym] = sy.Max(0, balance, evaluate=False)
-            elif sym.base == self.ElementaryBalance:
-                idx = sym.indices[0]
-                exchange_id = self.elementary_exchanges[idx].id
-                subs[sym] = self._compute_elementary_balance(exchange_id, values)
-
-        return expr.xreplace(subs) if subs else expr

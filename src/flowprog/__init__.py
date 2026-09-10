@@ -1,6 +1,7 @@
 from .model_structure import Process, Object, ElementaryExchange, ModelStructure
 from .model_builder import ModelBuilder
 from .activities import AdditionalActivity, merge_activities
+from .balance import BalanceTrace
 from .backends.sympy import SympyModel
 from .boundary_processes import (
     BoundaryProcess,
@@ -19,6 +20,7 @@ _base_all = [
     "ModelBuilder",
     "AdditionalActivity",
     "merge_activities",
+    "BalanceTrace",
     "SympyModel",
     "BoundaryProcess",
     "Import",

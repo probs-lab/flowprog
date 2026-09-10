@@ -26,6 +26,8 @@ $$
 
 Conversely, other objects can be treated as "external": they can be consumed and produced by processes freely, and their consumption and production do not need to be balanced within the model system boundary.
 
+See {ref}`api-checking-balance` for how flowprog can help to verify that a model does satisfy object balance.
+
 ## "Pulling" and "pushing" flows
 
 To define the equations making up the model, usually there is some part of the system where we wish to start by specifying the flows using known data, or user-controlled parameters. Then, the model should propagate these specified flows through the system, by:

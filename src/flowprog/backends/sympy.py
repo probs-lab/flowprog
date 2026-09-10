@@ -14,6 +14,16 @@ from rdflib import URIRef
 
 from ..model_structure import ModelStructure, Process, Object, ElementaryExchange
 from ..activities import AdditionalActivity, Limit, Floor, create_intermediate
+from ..balance import (
+    BalanceEvent,
+    BalanceTrace,
+    Effect,
+    Sign,
+    combine_signs,
+    log_summary,
+    sign_of,
+    too_large,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -27,10 +37,339 @@ _COMPILER_INTERMEDIATE_PREFIX = "_t"
 _TRIVIAL_TYPES = (sy.Symbol, sy.Number, sy.Indexed)
 
 
+# Guard against dividing by zero when a capacity limit works out how far to
+# scale a step down. Small enough not to affect the answer where the division
+# is meaningful, and only reached where it is not.
+_LIMIT_EPSILON = sy.S(10) ** -10
+
+
+def _object_balance(structure, i, contributions):
+    """Production minus consumption of object `i` from a set of activities."""
+    produced = sum(
+        (
+            structure.S[i, j] * contributions.get(structure.Y[j], sy.S.Zero)
+            for j in structure.processes_producing(i)
+        ),
+        sy.S.Zero,
+    )
+    consumed = sum(
+        (
+            structure.U[i, j] * contributions.get(structure.X[j], sy.S.Zero)
+            for j in structure.processes_consuming(i)
+        ),
+        sy.S.Zero,
+    )
+    return produced - consumed
+
+
+def _resolve_placeholders(structure, expr, values, balances, signs, proposed=None):
+    """Replace structural placeholder symbols with their current value.
+
+    This helper function is shared by :class:`SympyCompiler`, which resolves
+    placeholders step by step as it goes, and :class:`SympyModel`, which
+    resolves them afterwards against the final accumulated state.
+
+    :param values: ``{X[j] or Y[j]: expression}`` accumulated so far.
+    :param balances: ``{i: expression}`` balances accumulated so far.
+    :param signs: ``{i: Sign}`` of those balances. A known sign allows
+        balance expressions to be potentially simplified.
+    :param proposed: Optional ``{X[j] or Y[j]: contribution}`` added to
+        ``values`` before resolving placeholders.
+
+    """
+    if not isinstance(expr, sy.Basic):
+        return expr
+
+    def activity(symbol):
+        value = values.get(symbol, sy.S.Zero)
+        if proposed is not None and symbol in proposed:
+            return value + proposed[symbol]
+        return value
+
+    def balance(i):
+        value = balances.get(i, sy.S.Zero)
+        if proposed is not None:
+            value = value + _object_balance(structure, i, proposed)
+        return value
+
+    def balance_sign(i):
+        # A proposal is a hypothetical; no sign has been worked out for it.
+        # TODO: can this be usefully tightened?
+        if proposed is not None:
+            return Sign.UNKNOWN
+        return signs.get(i, Sign.UNKNOWN)
+
+    def shortfall(amount, sign):
+        """``Max(0, amount)``, without the ``Max`` where the sign is known."""
+        if sign in (Sign.NON_NEGATIVE, Sign.ZERO):
+            return amount
+        if sign is Sign.NON_POSITIVE:
+            return sy.S.Zero
+        return sy.Max(0, amount, evaluate=False)
+
+    subs = {}
+    for sym in expr.atoms(sy.Indexed):
+        # Compared by equality, not identity: sympy caches Indexed objects
+        # globally, so `Y[0]` can come back carrying an equal but distinct
+        # IndexedBase created by another ModelStructure.
+        base = sym.base
+        if base == structure.X or base == structure.Y:
+            subs[sym] = activity(sym)
+        elif base == structure.Balance:
+            subs[sym] = balance(sym.indices[0])
+        elif base == structure.ProductionDeficit:
+            # Production is short by however far the balance is below zero.
+            i = sym.indices[0]
+            subs[sym] = shortfall(-balance(i), balance_sign(i).opposite)
+        elif base == structure.ConsumptionDeficit:
+            # Consumption is short by however far the balance is above zero.
+            i = sym.indices[0]
+            subs[sym] = shortfall(balance(i), balance_sign(i))
+        elif base == structure.ElementaryBalance:
+            e = sym.indices[0]
+            subs[sym] = sum(
+                (
+                    structure.B[e, j] * activity(structure.Y[j])
+                    for j in structure.processes_with_exchange(e)
+                ),
+                sy.S.Zero,
+            )
+    return expr.xreplace(subs) if subs else expr
+
+
+class SympyCompiler:
+    """Turns a model's steps into the accumulated expressions that define it.
+
+    The main method is :meth:`compile`, which walks the steps in order, resolves
+    each step's placeholder symbols against what has been accumulated so far,
+    applies transformations, and adds the transformed contributions to the
+    state, then returns a :class:`SympyModel`.
+
+    Object balances are accumulated alongside the process activities, together
+    with their signs. This allows expressions to be simplified in some cases,
+    and tracing of whether object balances close.
+
+    This is a separate object from the model-builder and the final model because
+    it has additional caches and bookkeeping only needed during compilation.
+
+    """
+
+    def __init__(self, structure: ModelStructure):
+        self.structure = structure
+        self.values = defaultdict(lambda: sy.S.Zero)
+        self.intermediates: list[tuple[sy.Symbol, sy.Expr, str]] = []
+
+        # Balances are kept in two forms: the compact one keeps intermediate
+        # expressions unexpanded for use in later model steps, while the
+        # written-out one expands them to make cancellations visible.
+        #
+        # Every object starts at a known balance of zero.
+        objects = range(len(structure.objects))
+        self.balances = {i: sy.S.Zero for i in objects}
+        self.written_out = {i: sy.S.Zero for i in objects}
+        self.signs = {i: Sign.ZERO for i in objects}
+        self.events = defaultdict(list)
+        self.incomplete: set[int] = set()
+
+        self._definitions: dict[sy.Symbol, sy.Expr] = {}
+        self._expansions: dict[sy.Symbol, sy.Expr] = {}
+        self._sign_cache: dict[sy.Expr, Sign] = {}
+        self._written_out_cache: dict[sy.Expr, sy.Expr] = {}
+        self._new_symbols = sy.numbered_symbols(_COMPILER_INTERMEDIATE_PREFIX)
+
+    def compile(self, steps, recipe_data=None) -> "SympyModel":
+        """Compile `steps` and return the finished model."""
+        for index, step in enumerate(steps):
+            self.add_step(index, step)
+
+        model = SympyModel(
+            self.structure,
+            values=dict(self.values),
+            intermediates=self.intermediates,
+            recipe_data=recipe_data,
+            balance_trace=self.balance_trace(),
+        )
+        log_summary(model.balance_trace, _log)
+        return model
+
+    def balance_trace(self):
+        """What has been found so far about each object's balance."""
+        return BalanceTrace(
+            self.structure,
+            balances=self.written_out,
+            signs=self.signs,
+            events=self.events,
+            incomplete=self.incomplete,
+            definitions=self._definitions,
+            numerical_guards=(_LIMIT_EPSILON,),
+        )
+
+    def add_step(self, index, step):
+        """Resolve one step against the state so far, and accumulate it."""
+        for symbol, expr, description in step.intermediates:
+            self.define(symbol, self.resolve(expr), description)
+
+        contributions = {
+            symbol: self.resolve(expr) for symbol, expr in step.values.items()
+        }
+
+        # What the step would contribute if nothing held it back. A constraint
+        # can only take away from a step, never add to it, so this says which
+        # side of zero a balance ends up on even when the amount is uncertain.
+        unconstrained = contributions if step.transformations else None
+        for transform in step.transformations:
+            if isinstance(transform, Limit):
+                contributions = _compile_limit(contributions, transform, self)
+            elif isinstance(transform, Floor):
+                contributions = _compile_floor(contributions, transform, self)
+            else:
+                raise ValueError(f"Unknown transform {transform}")
+
+        for i in self._objects_touched_by(contributions):
+            self._record_effect(i, index, step, contributions, unconstrained)
+
+        for symbol, expr in contributions.items():
+            self.values[symbol] += expr
+
+    def resolve(self, expr, proposed=None):
+        """Replace placeholder symbols by their current accumulated values.
+
+        As :meth:`SympyModel.resolve`, but against the state accumulated so
+        far rather than a finished model.
+
+        :param proposed: Optional ``{X[j] or Y[j]: contribution}`` to resolve
+            against as though it had already been added.
+        """
+        return _resolve_placeholders(
+            self.structure, expr, self.values, self.balances, self.signs, proposed
+        )
+
+    def mint(self, expr, description):
+        """Route `expr` through a new intermediate symbol and return the symbol.
+
+        Transformations refer to the accumulated state several times each (as
+        'current', 'proposed' and the limit/threshold), and the result is
+        accumulated in turn, so inlining those expressions makes each step a
+        multiple of the last -- exponential in the number of steps. Hiding the
+        expressions behind named intermediate symbols keeps each step's compiled
+        expression a constant size. It also keeps `Piecewise` out of `Piecewise`
+        conditions, which is important as sympy's ExprCondPair runs
+        `piecewise_fold` and `cond.rewrite(ITE)` regardless of `evaluate=False`,
+        and this is very slow for large expressions.
+
+        Expressions that are already atomic are returned unchanged.
+
+        """
+        if not isinstance(expr, sy.Basic) or isinstance(expr, _TRIVIAL_TYPES):
+            return expr
+        symbol = create_intermediate(
+            self.intermediates, expr, description, self._new_symbols
+        )
+        self._definitions[symbol] = expr
+        return symbol
+
+    def define(self, symbol, expr, description):
+        """Record an intermediate symbol created by the model builder.
+
+        These need to be expanded in order to see cancellations in the object
+        balances. They are stored with earlier intermediates already substituted
+        in.
+
+        """
+        expr = sy.sympify(expr)
+        self.intermediates.append((symbol, expr, description))
+        self._definitions[symbol] = expr
+        written_out = self.write_out(expr)
+        if not too_large(written_out):
+            self._expansions[symbol] = written_out
+
+    def write_out(self, expr):
+        """Substitute model builder intermediate symbols in `expr`.
+
+        Memoised: the same expressions come round repeatedly, and substituting
+        into expressions containing ``Max`` is expensive.
+        """
+        if not isinstance(expr, sy.Basic):
+            return expr
+        if expr in self._written_out_cache:
+            return self._written_out_cache[expr]
+        symbols = {s for s in expr.free_symbols if s in self._expansions}
+        if not symbols:
+            result = expr
+        else:
+            result = expr.xreplace({s: self._expansions[s] for s in symbols})
+            # xreplace on a bare symbol returns the replacement itself, which
+            # need not be a sympy object if a step's value was a plain number.
+            if not isinstance(result, sy.Basic):
+                result = sy.S(result)
+        self._written_out_cache[expr] = result
+        return result
+
+    # -- balance bookkeeping --
+
+    def _record_effect(self, i, index, step, contributions, unconstrained):
+        """Note what one step did to object `i`'s balance."""
+        delta = _object_balance(self.structure, i, contributions)
+        written_out = self.write_out(delta)
+        if written_out == 0:
+            # The step's own flows balance this object between themselves.
+            return
+
+        balance, outstanding = self.balances[i], self.written_out[i]
+        sign = self.signs[i]
+
+        if outstanding + written_out == 0:
+            effect, new_sign = Effect.CLOSES, Sign.ZERO
+        elif self._would_have_closed(i, outstanding, unconstrained):
+            effect, new_sign = Effect.CLOSES_UNLESS_CONSTRAINED, sign
+        else:
+            effect = Effect.OPENS
+            new_sign = combine_signs(sign, self._sign(written_out))
+
+        self.events[i].append(
+            BalanceEvent(index, effect, step.description, sign, new_sign)
+        )
+        closed = new_sign is Sign.ZERO
+        self.balances[i] = sy.S.Zero if closed else balance + delta
+        self.written_out[i] = sy.S.Zero if closed else outstanding + written_out
+        self.signs[i] = new_sign
+        if too_large(self.written_out[i]):
+            # Stop writing this one out. The compact form is still accumulated,
+            # but this object can no longer be proved to balance, and what is
+            # left over is no longer a faithful account of what is missing.
+            self.written_out[i] = self.balances[i]
+            self.incomplete.add(i)
+
+    def _would_have_closed(self, i, outstanding, unconstrained):
+        """Whether a step would have closed object `i` had nothing held it back.
+
+        `unconstrained` is what the step contributes before its transformations
+        are applied, or None if it has none.
+        """
+        if unconstrained is None:
+            return False
+        delta = _object_balance(self.structure, i, unconstrained)
+        return outstanding + self.write_out(delta) == 0
+
+    def _objects_touched_by(self, contributions):
+        """Indices of objects whose balance a set of contributions can change."""
+        structure = self.structure
+        touched = set()
+        for symbol in contributions:
+            process = structure.processes[symbol.indices[0]]
+            for object_id in list(process.produces) + list(process.consumes):
+                touched.add(structure.lookup_object(object_id))
+        return sorted(touched)
+
+    def _sign(self, expr):
+        """:func:`~flowprog.balance.sign_of`, sharing one cache across steps."""
+        return sign_of(expr, self._definitions, self._sign_cache)
+
+
 class SympyModel:
     """Evaluable model with recipe data.
 
-    Model represents a complete symbolic model with associated recipe data.
+    This represents a complete symbolic model with associated recipe data.
     It can be evaluated repeatedly with different parameter values. The model
     is immutable after creation (though recipe can be updated if needed).
 
@@ -46,72 +385,14 @@ class SympyModel:
     ) -> "SympyModel":
         """Compile a list of AdditionalActivity steps into accumulated sympy expressions.
 
-        Walks steps in order, resolving structural symbols (X[j], Y[j],
-        Balance[i], ProductionDeficit[i], ConsumptionDeficit[i]) against
-        accumulated state and applying transformations.
+        A thin wrapper over :class:`SympyCompiler`, which is where the work
+        happens; use that directly to keep hold of the compiler afterwards.
 
         :param steps: list[AdditionalActivity]
         :param structure: ModelStructure (provides X, Y, S, U and connectivity)
         :returns: SympyModel
         """
-        values = defaultdict(lambda: sy.S.Zero)
-        all_intermediates = []
-        compiler_symbols = sy.numbered_symbols(_COMPILER_INTERMEDIATE_PREFIX)
-
-        def mint(expr, description):
-            """Route `expr` through an intermediate symbol and return the symbol.
-
-            Transformations refer to the accumulated state several times each
-            (as 'current', 'proposed' and the limit/threshold), and the result
-            is accumulated in turn, so inlining those expressions makes each
-            step a multiple of the last -- exponential in the number of steps.
-            Naming them keeps each step's compiled expression a constant size,
-            and (just as importantly) keeps `Piecewise` out of `Piecewise`
-            conditions, where sympy's ExprCondPair runs `piecewise_fold` and
-            `cond.rewrite(ITE)` regardless of `evaluate=False` -- a pass that
-            walks the whole condition and calls `simplify_logic` on it.
-
-            Expressions that are already atomic are returned unchanged: they
-            cost nothing to inline and cannot grow.
-            """
-            if not isinstance(expr, sy.Basic) or isinstance(expr, _TRIVIAL_TYPES):
-                return expr
-            return create_intermediate(
-                all_intermediates, expr, description, compiler_symbols
-            )
-
-        for step in steps:
-            # 1. Collect intermediates, resolving structural symbols
-            for sym, expr, desc in step.intermediates:
-                resolved_expr = structure.resolve_structural_symbols(expr, values)
-                all_intermediates.append((sym, resolved_expr, desc))
-
-            # 2. Resolve structural symbols in the step's values
-            resolved_values = {}
-            for sym, expr in step.values.items():
-                resolved_values[sym] = structure.resolve_structural_symbols(
-                    expr, values
-                )
-
-            # 3. Apply transformations
-            for transform in step.transformations:
-                if isinstance(transform, Limit):
-                    resolved_values = _compile_limit(
-                        resolved_values, transform, values, structure, mint
-                    )
-                elif isinstance(transform, Floor):
-                    resolved_values = _compile_floor(
-                        resolved_values, transform, values, structure, mint
-                    )
-                else:
-                    raise ValueError(f"Unknown transform {transform}")
-
-            # 4. Accumulate
-            for sym, expr in resolved_values.items():
-                values[sym] += expr
-
-        values = dict(values)
-        return cls(structure, values, all_intermediates, recipe_data)
+        return SympyCompiler(structure).compile(steps, recipe_data)
 
     def __init__(
         self,
@@ -119,13 +400,18 @@ class SympyModel:
         values: dict,
         intermediates: list,
         recipe_data=None,
+        balance_trace=None,
     ):
-        """Initialize evaluable model (typically called from SympyModel.from_steps()).
+        """Initialize evaluable model (typically called via SympyCompiler).
 
         :param structure: Model structure (shared with builder)
-        :param values: Symbolic expressions from builder
-        :param intermediates: Intermediate symbols from builder
+        :param values: Accumulated ``{X[j] or Y[j]: expression}``
+        :param intermediates: ``(symbol, expression, description)`` triples
         :param recipe_data: Recipe data (optional)
+        :param balance_trace: Object market balances, as a
+            :class:`~flowprog.balance.BalanceTrace`. If omitted, balance expressions
+            are filled in based on `values`, but it will not be possible to identify
+            which expressions are known to balance or not.
         """
         self.structure = structure
 
@@ -133,15 +419,24 @@ class SympyModel:
         self._values = defaultdict(lambda: sy.S.Zero, values)
         self._intermediates = intermediates
 
+        if balance_trace is None:
+            balance_trace = BalanceTrace(
+                structure,
+                balances={
+                    i: _object_balance(structure, i, self._values)
+                    for i in range(len(structure.objects))
+                },
+                definitions={sym: expr for sym, expr, _ in intermediates},
+                numerical_guards=(_LIMIT_EPSILON,),
+            )
+        self.balance_trace = balance_trace
+
         # Recipe data storage
         self._recipe_by_id: dict[str, dict] = {}
         self._recipe_cache: Optional[dict[sy.Indexed, Union[float, sy.Expr]]] = None
 
         if recipe_data:
             self.set_recipe(recipe_data)
-
-    def __repr__(self):
-        return f"SympyModel(structure={self.structure}, has_recipe={bool(self._recipe_by_id)})"
 
     # Convenience accessors (delegate to structure)
     @property
@@ -365,6 +660,29 @@ class SympyModel:
         """
         return self._values.get(symbol, sy.S.Zero)
 
+    def resolve(self, expr: sy.Expr):
+        """Replace structural placeholder symbols by this model's expressions.
+
+        ``X[j]``, ``Y[j]``, ``Balance[i]``, the deficits and
+        ``ElementaryBalance[e]`` mean something only relative to the accumulated
+        model state. Recipe coefficients and intermediate symbols are left in
+        place so the resulting expressions are small -- use :meth:`eval` to
+        substitute those too, or :meth:`lambdify` to compile the result for
+        repeated evaluation.
+
+        :param expr: Expression to resolve.
+        :return: Expression in terms of recipe coefficients, intermediate
+            symbols and model parameters.
+
+        """
+        return _resolve_placeholders(
+            self.structure,
+            expr,
+            self._values,
+            self.balance_trace.balances,
+            self.balance_trace.signs,
+        )
+
     def eval_intermediates(self, expr: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows.
 
@@ -415,7 +733,7 @@ class SympyModel:
 
         """
         # Resolve any structural symbols against final accumulated state.
-        result = self.structure.resolve_structural_symbols(expr, self._values)
+        result = self.resolve(expr)
         if expand_intermediates:
             # Expands intermediates *and* substitutes recipe/values into them.
             result = self.eval_intermediates(result, values)
@@ -497,8 +815,7 @@ class SympyModel:
         # are substituted later (all_data, in _lambdify), keeping expressions
         # compact and CSE-friendly.
         expr_values = [
-            self.structure.resolve_structural_symbols(sy.S(v), self._values)
-            for v in expressions.values()
+            self.resolve(sy.S(v)) for v in expressions.values()
         ]
 
         # Function that returns a vector of values in same order as index
@@ -573,6 +890,7 @@ class SympyModel:
         - Model structure (processes and objects)
         - All assigned values (_values)
         - Intermediate symbols and expressions (_intermediates)
+        - What each object's market balances to, and how it got there
         - Recipe data (both consumes and produces)
 
         Symbolic expressions are serialized using SymPy's srepr() which produces
@@ -590,7 +908,7 @@ class SympyModel:
 
         # Build the data structure
         data = {
-            "version": "1.2",
+            "version": "1.3",
             "metadata": metadata or {},
             "saved_at": datetime.now().isoformat(),
             "type": "SympyModel",
@@ -633,6 +951,10 @@ class SympyModel:
                 for sym, expr, label in self._intermediates
             ],
             "recipe": self._recipe_by_id,  # Save the ID-based recipe
+            # What each object's market comes to, and how it got there. Saved
+            # because it cannot be recovered from the values alone in the same
+            # form -- see SympyModel.__init__.
+            "object_balances": self.balance_trace.to_dict(),
         }
 
         with open(filepath, "w") as f:
@@ -669,7 +991,7 @@ class SympyModel:
             data = json.load(f)
 
         # Check version compatibility
-        if data.get("version") not in ("1.0", "1.1", "1.2"):
+        if data.get("version") not in ("1.0", "1.1", "1.2", "1.3"):
             _log.warning(
                 f"Model file version {data.get('version')} may not be compatible "
                 "with this version of flowprog"
@@ -755,12 +1077,29 @@ class SympyModel:
                 _log.error(f"Failed to deserialize intermediate {item['symbol']}: {e}")
                 raise
 
+        # Restore what was recorded about the object balances. Absent from
+        # files written before this was tracked, in which case the model works
+        # them out from the values instead.
+        saved_balances = data.get("object_balances")
+        balance_trace = (
+            BalanceTrace.from_dict(
+                saved_balances,
+                structure,
+                definitions={sym: expr for sym, expr, _ in intermediates},
+                numerical_guards=(_LIMIT_EPSILON,),
+                sympify=lambda expr: sy.sympify(expr, locals=namespace),
+            )
+            if saved_balances
+            else None
+        )
+
         # Create model with recipe
         model = cls(
             structure=structure,
             values=values,
             intermediates=intermediates,
             recipe_data=data.get("recipe"),  # Restore recipe
+            balance_trace=balance_trace,
         )
 
         _log.info(f"Model loaded from {filepath}")
@@ -770,136 +1109,84 @@ class SympyModel:
         return model
 
 
-def _compile_limit(values_dict, limit_transform, accumulated_values, structure, mint):
+def _compile_limit(contributions, limit, state):
     """Compile a Limit transformation into Piecewise expressions.
 
-    The Limit's expression and limit_value contain raw structural symbols.
-    The compiler resolves them in two ways:
-    - 'current': structural symbols resolved against accumulated state (before this step)
-    - 'proposed': structural symbols resolved against accumulated + this step's contribution
-    - 'limit': limit_value resolved against accumulated state
+    A limit constrains an expression not to exceed a bound, by scaling down the
+    step it applies to. Three values decide by how much:
 
-    Each of those, and this step's own contributions, are routed through
-    intermediate symbols by `mint`.
+    - *current*: what the expression comes to as things stand;
+    - *proposed*: what it would come to if this step were added in full;
+    - *bound*: the limit itself, as things stand.
+
+    Each of those, and the step's own contributions, are routed through
+    intermediate symbols: they appear several times below, and naming them
+    keeps each step's compiled expression a constant size.
     """
-    # This step's contributions appear twice in each Piecewise below, and again
-    # inside 'proposed'; name them as an intermediate symbol once up front so
-    # all four uses share.
-    values_dict = {k: mint(v, f"limit input for {k}") for k, v in values_dict.items()}
+    contributions = {
+        symbol: state.mint(expr, f"limit input for {symbol}")
+        for symbol, expr in contributions.items()
+    }
 
-    # 'current' = expression evaluated with accumulated values only
-    current = mint(
-        structure.resolve_structural_symbols(
-            limit_transform.expression, accumulated_values
-        ),
-        f"limit: current value of {limit_transform.expression}",
+    current = state.mint(
+        state.resolve(limit.expression),
+        f"limit: current value of {limit.expression}",
     )
-
-    # 'limit' = limit_value evaluated with accumulated values
-    limit_resolved = mint(
-        structure.resolve_structural_symbols(
-            limit_transform.limit_value, accumulated_values
-        ),
-        f"limit: bound {limit_transform.limit_value}",
+    bound = state.mint(
+        state.resolve(limit.limit_value),
+        f"limit: bound {limit.limit_value}",
     )
-
-    # 'proposed' = expression evaluated with (accumulated + step contribution)
-    M = len(structure.processes)
-    proposed_values = dict(accumulated_values)
-    for j in range(M):
-        xj = structure.X[j]
-        yj = structure.Y[j]
-        if xj in values_dict:
-            proposed_values[xj] = (
-                accumulated_values.get(xj, sy.S.Zero) + values_dict[xj]
-            )
-        if yj in values_dict:
-            proposed_values[yj] = (
-                accumulated_values.get(yj, sy.S.Zero) + values_dict[yj]
-            )
-
-    proposed = mint(
-        structure.resolve_structural_symbols(
-            limit_transform.expression, proposed_values
-        ),
-        f"limit: proposed value of {limit_transform.expression}",
+    proposed = state.mint(
+        state.resolve(limit.expression, proposed=contributions),
+        f"limit: proposed value of {limit.expression}",
     )
 
     # `proposed` and `current` name the same subexpressions the inlined form
     # would have evaluated, so this subtracts the same two floats as before,
-    # but keeps `safe_diff` a constant size -- which matters because sy.Max()
-    # runs an `equals()` comparison over its arguments that is very slow on
-    # anything Piecewise-laden.
-    diff = proposed - current
-
-    # Epsilon protection for division by zero (same as original)
-    epsilon = sy.S(10) ** -10
-    safe_diff = sy.Max(diff, epsilon)
+    # but keeps `safe_difference` a constant size -- which matters because
+    # sy.Max() runs an `equals()` comparison over its arguments that is very
+    # slow on anything Piecewise-laden.
+    safe_difference = sy.Max(proposed - current, _LIMIT_EPSILON)
 
     return {
-        k: sy.Piecewise(
-            (sy.S.Zero, current >= limit_resolved),
-            (v, proposed <= limit_resolved),
-            ((limit_resolved - current) / safe_diff * v, True),
+        symbol: sy.Piecewise(
+            (sy.S.Zero, current >= bound),
+            (expr, proposed <= bound),
+            ((bound - current) / safe_difference * expr, True),
             evaluate=False,
         )
-        for k, v in values_dict.items()
+        for symbol, expr in contributions.items()
     }
 
 
-def _compile_floor(values_dict, floor_transform, accumulated_values, structure, mint):
+def _compile_floor(contributions, floor, state):
     """Compile a Floor transformation into Piecewise expressions.
 
-    The Floor's expression and threshold contain raw structural symbols.
-    The compiler resolves them to determine:
-    - 'proposed': expression value after adding this step's contribution
-    - 'threshold': the minimum acceptable value
-
-    If proposed >= threshold, the step values pass through unchanged.
-    Otherwise they are zeroed out (the process doesn't operate at all).
-
-    As in `_compile_limit`, the resolved expressions are routed through
-    intermediate symbols by `mint`.
+    A floor is a minimum operating level: if adding this step in full would
+    still leave the expression below the threshold, the step is dropped
+    entirely rather than run below the minimum.
     """
-    values_dict = {k: mint(v, f"floor input for {k}") for k, v in values_dict.items()}
+    contributions = {
+        symbol: state.mint(expr, f"floor input for {symbol}")
+        for symbol, expr in contributions.items()
+    }
 
-    # 'proposed' = expression evaluated with (accumulated + step contribution)
-    M = len(structure.processes)
-    proposed_values = dict(accumulated_values)
-    for j in range(M):
-        xj = structure.X[j]
-        yj = structure.Y[j]
-        if xj in values_dict:
-            proposed_values[xj] = (
-                accumulated_values.get(xj, sy.S.Zero) + values_dict[xj]
-            )
-        if yj in values_dict:
-            proposed_values[yj] = (
-                accumulated_values.get(yj, sy.S.Zero) + values_dict[yj]
-            )
-
-    proposed = mint(
-        structure.resolve_structural_symbols(
-            floor_transform.expression, proposed_values
-        ),
-        f"floor: proposed value of {floor_transform.expression}",
+    proposed = state.mint(
+        state.resolve(floor.expression, proposed=contributions),
+        f"floor: proposed value of {floor.expression}",
     )
-
-    # 'threshold' resolved against accumulated state
-    threshold_resolved = mint(
-        structure.resolve_structural_symbols(
-            floor_transform.threshold, accumulated_values
-        ),
-        f"floor: threshold {floor_transform.threshold}",
+    threshold = state.mint(
+        state.resolve(floor.threshold),
+        f"floor: threshold {floor.threshold}",
     )
 
     return {
-        k: sy.Piecewise(
-            (v, proposed >= threshold_resolved),
+        symbol: sy.Piecewise(
+            (expr, proposed >= threshold),
             (sy.S.Zero, True),
             evaluate=False,
         )
-        for k, v in values_dict.items()
+        for symbol, expr in contributions.items()
     }
 
 

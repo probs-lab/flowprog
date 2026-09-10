@@ -243,11 +243,8 @@ class Model:
         # Build model with recipe (fresh each time)
         model = self._builder.build(recipe_data)
 
-        # Resolve any structural symbols against compiled accumulated state
-        expr = self._builder._resolve_structural_symbols(expr)
-
-        # Delegate to model
-        return model.eval_intermediates(expr, other_values)
+        # Resolve any structural symbols against the compiled model's state
+        return model.eval_intermediates(model.resolve(expr), other_values)
 
     def eval(self, symbol: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows."""

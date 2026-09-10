@@ -245,9 +245,9 @@ def test_boundary_supplied_objects_balance_after_dispatch():
     dispatch_boundary_processes() closes each of these markets exactly, with
     no shim left reading a deficit for reporting purposes.
 
-    Uses resolve_structural_symbols() + a single lambdify() call rather than
-    repeated SympyModel.eval() -- see the module docstring for why eager
-    per-call substitution doesn't scale at this model's size.
+    Uses a single lambdify() call, which resolves the structural symbols
+    itself, rather than repeated SympyModel.eval() -- see the module docstring
+    for why eager per-call substitution doesn't scale at this model's size.
     """
     data = load_data()
     model_builder, recipe_data = build_structure(data)
@@ -261,12 +261,10 @@ def test_boundary_supplied_objects_balance_after_dispatch():
     exprs = {}
     for object_id in BOUNDARY_SUPPLIED_OBJECTS:
         i = model.structure.lookup_object(object_id)
-        exprs[object_id] = model.structure.resolve_structural_symbols(
-            model.structure.ProductionDeficit[i], model._values
-        )
+        exprs[object_id] = model.structure.ProductionDeficit[i]
         # Production of the same object, to scale the tolerance below against.
-        exprs[(object_id, "produced")] = model.structure.resolve_structural_symbols(
-            model.structure.expr("SoldProduction", object_id=object_id), model._values
+        exprs[(object_id, "produced")] = model.structure.expr(
+            "SoldProduction", object_id=object_id
         )
     func = model.lambdify(expressions=exprs, modules="math")
 

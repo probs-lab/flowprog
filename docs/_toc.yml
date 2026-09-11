@@ -16,3 +16,6 @@ chapters:
     - file: examples/energy/system-definitions
     - file: examples/energy/explain-model
     - file: examples/energy/energy-model
+- file: examples/petrochem/index
+  sections:
+    - file: examples/petrochem/contribution-analysis

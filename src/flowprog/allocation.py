@@ -2,31 +2,50 @@
 intensities beta) at a numeric operating point, plus symbolic pass-through
 reattribution of burdens to direct consumers.
 
-Two tools, one mathematical family:
+There are two related calculations:
 
-- `Allocation`: full-chain mu/beta, solved numerically at a parameter point.
-  The model is evaluated, floats are extracted, and (I - M) mu = c is solved
-  by dense linear algebra -- the system is tiny (one row/column per object),
-  so this is fast even repeated across many parameter samples (the numeric
-  extraction is compiled once via the model's lambdify path and cached on the
-  model instance). See the implementation plan section 6 for the mathematics.
+- `Allocation`: full attributional calculation, solved numerically at a
+  parameter point. The model is evaluated, numeric values are extracted, and (I
+  - M) mu = c is solved by dense linear algebra.
 
-- `PassThrough`: allocation with a *limited propagation frontier*. A
-  designated set of "pass-through" processes have their burdens (per unit of
-  their output) pushed to their direct consumers in proportion to
-  consumption; every other process retains its own burden. Because burden is
-  moved, never copied, any grouping over the reattributed (exchange x
-  process) table still partitions the system total -- unlike grouping
-  full-chain beta*Y, which double counts embodied burdens across groups.
-  Implemented symbolically, so results stay on the model's
-  lambdify-once/evaluate-many fast path and can be compiled to standalone
-  code.
+- `PassThrough`: allocation with a limited propagation frontier. A designated
+  set of "pass-through" processes have their burdens pushed to their direct
+  consumers in proportion to consumption; every other process retains its own
+  burden. Because burden is only moved, any grouping over the reattributed
+  (exchange x process) table still partitions the system total. This is a
+  special case of the general allocation that can be implemented symbolically,
+  so the resulting expressions can be compiled to standalone code.
+
+Allocation rules
+----------------
+
+`Allocation` splits each process's burden across its outputs using a *rule*. A
+rule is asked for the weights of the outputs of a given process, which is
+automatically normalised.
+
+The available rules are::
+
+    ByValue()                   proportional to the output quantities
+    ByProperty(properties)      ... times a per-object property
+    Fixed(shares)               explicit weights
+    Excluding(objects, rule)    those objects bear no burden
+    Rules(default, by_process)  a default, with exceptions per process
+
+`Rules` is itself a rule, so the pieces nest.  For example::
+
+    Rules(
+        default=Excluding({"Air", "Water", "WasteWater"}, ByValue()),
+        by_process={
+            "CombinedHeatAndPower": Fixed({"Electricity": 0.6, "Heat": 0.4}),
+        },
+    )
+
 """
 
 import logging
 import weakref
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Mapping, Optional, Protocol
 
 import numpy as np
 import pandas as pd
@@ -69,45 +88,174 @@ class Scope:
         return process_id not in self.excluded_processes
 
 
-class MassAllocation:
-    """Allocation weights proportional to mass (S_ij) flow."""
+class Rule(Protocol):
+    """Splits one process's burden across its flows."""
 
-    def raw_weight(self, object_id, process_id, S_ij):
-        return S_ij
+    def weights(self, process, flows: Mapping[str, float]) -> Mapping[str, float]:
+        """Raw weights, one for each key of `flows`.
+
+        The weights need not sum to one; they are normalised by the caller. A
+        weight of 0 means the flow bears none of the burden.
+
+        :param process: The `Process` whose burden is being split.
+        :param flows: ``{object id: quantity}`` -- the flows to split the
+            burden across.
+        :raises ValueError: If the rule has no value for one of the flows.
+
+        """
+
+
+def _lookup(values, object_id, process, rule):
+    if object_id not in values:
+        raise ValueError(
+            f"{type(rule).__name__} has no value for {object_id!r}, needed to "
+            f"split the burden of process {process.id!r}"
+        )
+    return values[object_id]
 
 
 @dataclass
-class PropertyAllocation:
-    """Allocation weights proportional to S_ij times a per-object property
-    (e.g. energy content, price).
+class ByValue:
+    """Weights proportional to the flows themselves."""
 
-    :param properties: {object_id: property value}. A multi-output process
-        with an output missing from `properties` is an uncovered process.
+    def weights(self, process, flows):
+        return dict(flows)
+
+
+@dataclass
+class ByProperty:
+    """Weights proportional to the flows times a per-object property, such as
+    energy content, exergy or price.
+
+    :param properties: ``{object id: property value}``, covering every flow of
+        every process this rule is asked about.
     """
 
     properties: dict
 
-    def raw_weight(self, object_id, process_id, S_ij):
-        if object_id not in self.properties:
-            return None
-        return S_ij * self.properties[object_id]
+    def weights(self, process, flows):
+        return {
+            object_id: quantity * _lookup(self.properties, object_id, process, self)
+            for object_id, quantity in flows.items()
+        }
 
 
 @dataclass
-class ManualAllocation:
-    """Explicit allocation weights.
+class Fixed:
+    """Explicit weights, independent of the flow quantities.
 
-    :param weights: {process_id: {object_id: weight}}. A multi-output process
-        absent from `weights` (or missing one of its outputs) is uncovered.
+    :param shares: ``{object id: weight}``, covering every flow of every
+        process this rule is asked about.
     """
 
-    weights: dict
+    shares: dict
 
-    def raw_weight(self, object_id, process_id, S_ij):
-        proc_weights = self.weights.get(process_id)
-        if proc_weights is None or object_id not in proc_weights:
-            return None
-        return proc_weights[object_id]
+    def weights(self, process, flows):
+        return {
+            object_id: _lookup(self.shares, object_id, process, self)
+            for object_id in flows
+        }
+
+
+@dataclass
+class Excluding:
+    """Objects that bear no burden, with another rule splitting the rest.
+
+    Residual outputs -- air, water, wastes -- usually take no share of the
+    burden of the process that emits them::
+
+        Excluding({"Air", "Water", "WasteWater"}, ByValue())
+
+    The excluded objects are removed before `rule` is asked, so `rule` does not
+    need data for them.
+
+    :param objects: Object ids that always get weight 0.
+    :param rule: Splits the burden across the remaining flows.
+
+    """
+
+    objects: frozenset
+    rule: Rule
+
+    def __post_init__(self):
+        self.objects = frozenset(self.objects)
+
+    def weights(self, process, flows):
+        bearing = {
+            object_id: quantity
+            for object_id, quantity in flows.items()
+            if object_id not in self.objects
+        }
+        weights = self.rule.weights(process, bearing) if bearing else {}
+        return {object_id: weights.get(object_id, 0.0) for object_id in flows}
+
+    def validate(self, structure):
+        unknown = self.objects - {o.id for o in structure.objects}
+        if unknown:
+            raise ValueError(
+                f"Excluding references unknown objects {sorted(unknown)}"
+            )
+        _validate(self.rule, structure)
+
+
+@dataclass
+class Rules:
+    """A default rule, with exceptions for named processes.
+
+    `Rules` is itself a rule, so it goes anywhere a rule does::
+
+        Rules(
+            default=Excluding(RESIDUAL_OUTPUTS, ByValue()),
+            by_process={"SteamCracking": ByProperty(energy_content)},
+        )
+
+    An entry in `by_process` replaces the default outright for that process:
+    each entry states that process's split in full, including which of its
+    outputs bear no burden.
+
+    :param default: Rule for processes not named in `by_process`.
+    :param by_process: ``{process id: rule}``.
+    """
+
+    default: Rule
+    by_process: dict = field(default_factory=dict)
+
+    def rule_for(self, process_id) -> Rule:
+        """The rule that splits `process_id`'s burden."""
+        return self.by_process.get(process_id, self.default)
+
+    def weights(self, process, flows):
+        return self.rule_for(process.id).weights(process, flows)
+
+    def validate(self, structure):
+        for process_id in self.by_process:
+            structure.lookup_process(process_id)  # raises on an unknown id
+        _validate(self.default, structure)
+        for rule in self.by_process.values():
+            _validate(rule, structure)
+
+    def assignments(self, structure) -> pd.DataFrame:
+        """Which rule splits which multi-output process's burden.
+
+        Answers "what will this do?" without running a solve.
+
+        :return: DataFrame with columns ``process``, ``outputs``, ``rule``.
+        """
+        return pd.DataFrame(
+            [
+                (p.id, len(p.produces), type(self.rule_for(p.id)).__name__)
+                for p in structure.processes
+                if len(p.produces) > 1
+            ],
+            columns=["process", "outputs", "rule"],
+        )
+
+
+def _validate(rule, structure):
+    """Check a rule's object and process ids against the model, if it can."""
+    validate = getattr(rule, "validate", None)
+    if validate is not None:
+        validate(structure)
 
 
 @dataclass
@@ -119,7 +267,8 @@ class AllocationResult:
     :param supply_shares: "sigma" -- long-form DataFrame (object, process, sigma)
     :param meta: dict with keys "rule", "scope", "cutoffs" (list of
         (process_id, object_id) pairs with a deliberate zero-weight cutoff on
-        a nonzero flow), "zero_supply_objects", "conservation_residuals"
+        a nonzero flow), "sinks" (processes whose burden is not further allocated),
+        "zero_supply_objects", "conservation_residuals"
     """
 
     object_intensities: pd.DataFrame
@@ -149,15 +298,19 @@ class Allocation:
     :param model: A built, evaluable model (e.g. SympyModel)
     :param values: Numeric parameter values at which to evaluate (the
         operating point theta)
-    :param rule: An allocation rule (MassAllocation/PropertyAllocation/
-        ManualAllocation) for splitting multi-output processes. No default --
-        the choice must be explicit.
+    :param rule: A `Rule` splitting each process's burden across its
+        outputs.
     :param scope: Optional Scope selecting participating processes and
         waste-object cut-off behaviour. Default: all processes in scope, no
         waste objects.
     :param characterise: Optional ``{name: {exchange_id: factor}}`` extra
         characterised slices, in addition to the default per-exchange
         breakdown (mu/beta always carry the full per-exchange breakdown).
+    :param wastes: Object ids to treat as wastes throughout: they take no
+        share of the burden of the process producing them, and carry no
+        burden into the process consuming them. Shorthand for wrapping `rule`
+        in `Excluding` and setting the matching `Scope`; pass `rule` and
+        `scope` directly to state the two halves separately.
 
     Access results via `.result` (an AllocationResult).
     """
@@ -166,10 +319,21 @@ class Allocation:
         self,
         model,
         values: dict,
-        rule,
+        rule: Rule,
         scope: Optional[Scope] = None,
         characterise: Optional[dict] = None,
+        wastes: Optional[frozenset] = None,
     ):
+        if wastes is not None:
+            if scope is not None:
+                raise ValueError(
+                    "pass either wastes= or scope=, not both: wastes= sets the "
+                    "scope's waste objects itself"
+                )
+            wastes = frozenset(wastes)
+            rule = Excluding(wastes, rule)
+            scope = Scope(waste_objects=wastes, waste_input_burden="cutoff")
+
         self.model = model
         self.values = values
         self.rule = rule
@@ -200,7 +364,10 @@ class Allocation:
             [sum(Y[j] * S[i, j] for j in range(M) if in_scope[j]) for i in range(N)]
         )
 
-        weights, cutoffs = _compute_weights(self.rule, processes, objects, model, S, in_scope)
+        _validate(self.rule, model.structure)
+        weights, sinks, cutoffs = _allocation_weights(
+            self.rule, model.structure, S, in_scope
+        )
 
         zero_supply = [i for i in range(N) if T[i] == 0]
         for i in zero_supply:
@@ -278,7 +445,7 @@ class Allocation:
                 beta[j, col] = total
 
         residuals = _check_conservation_residuals(
-            processes, X, Y, U_eff, T, in_scope, mu, beta, b, slice_names
+            processes, X, Y, U_eff, T, in_scope, mu, beta, b, slice_names, sinks
         )
 
         object_intensities = pd.DataFrame(
@@ -300,6 +467,7 @@ class Allocation:
             "rule": self.rule,
             "scope": self.scope,
             "cutoffs": cutoffs,
+            "sinks": sinks,
             "zero_supply_objects": [objects[i].id for i in zero_supply],
             "conservation_residuals": residuals,
         }
@@ -312,67 +480,63 @@ class Allocation:
         )
 
 
-def _compute_weights(rule, processes, objects, model, S, in_scope):
-    """Compute normalised weights w[i,j] and record deliberate zero-weight cutoffs.
-
-    Single-output processes always get weight 1 for their one output,
-    regardless of rule. Multi-output processes ask the rule for each output's
-    raw (unnormalised) weight; missing data across all such processes is
-    collected into one combined error.
+def _normalised_weights(rule, process, flows):
+    """Weights summing to 1 for one process, or None if it is a sink.
     """
-    M = len(processes)
-    N = len(objects)
-    weights = np.zeros((N, M))
-    errors = []
-
-    for j, p in enumerate(processes):
-        if not in_scope[j]:
-            continue
-        out_idx = [model.structure.lookup_object(o) for o in p.produces]
-        if len(out_idx) == 0:
-            continue
-        if len(out_idx) == 1:
-            weights[out_idx[0], j] = 1.0
-            continue
-
-        raws = {}
-        missing = []
-        for i in out_idx:
-            w = rule.raw_weight(objects[i].id, p.id, S[i, j])
-            if w is None:
-                missing.append(objects[i].id)
-            else:
-                raws[i] = w
-        if missing:
-            errors.append((p.id, missing))
-            continue
-
-        total = sum(raws.values())
-        if total == 0:
-            errors.append((p.id, [objects[i].id for i in out_idx]))
-            continue
-        for i, w in raws.items():
-            weights[i, j] = w / total
-
-    if errors:
-        details = "; ".join(f"{pid} (missing: {objs})" for pid, objs in errors)
+    if not flows:
+        return None
+    weights = rule.weights(process, flows)
+    if weights.keys() != flows.keys():
         raise ValueError(
-            f"Allocation rule does not cover all multi-output processes: {details}"
+            f"{type(rule).__name__} returned weights for {sorted(weights)}, "
+            f"but process {process.id!r} has flows {sorted(flows)}"
         )
+    negative = sorted(k for k, w in weights.items() if w < 0)
+    if negative:
+        raise ValueError(
+            f"{type(rule).__name__} gave process {process.id!r} negative "
+            f"weights for {negative}"
+        )
+    total = sum(weights.values())
+    if total == 0:
+        return None
+    return {object_id: w / total for object_id, w in weights.items()}
 
-    cutoffs = []
-    for j, p in enumerate(processes):
+
+def _allocation_weights(rule, structure, S, in_scope):
+    """Ask `rule` to split every in-scope process's burden across its outputs.
+
+    :return: ``(weights, sinks, cutoffs)`` -- an N x M array of normalised
+        weights; the ids of processes whose burden is not further allocated;
+        and ``(process_id, object_id)`` pairs given zero weight despite a
+        nonzero output flow.
+    """
+    weights = np.zeros((len(structure.objects), len(structure.processes)))
+    sinks, cutoffs = [], []
+
+    for j, process in enumerate(structure.processes):
         if not in_scope[j]:
             continue
-        for obj_id in p.produces:
-            i = model.structure.lookup_object(obj_id)
-            if S[i, j] > 0 and weights[i, j] == 0:
-                cutoffs.append((p.id, obj_id))
+        index = {
+            object_id: structure.lookup_object(object_id)
+            for object_id in process.produces
+        }
+        flows = {object_id: S[i, j] for object_id, i in index.items()}
+        shares = _normalised_weights(rule, process, flows)
+        if shares is None:
+            sinks.append(process.id)
+            continue
+        for object_id, weight in shares.items():
+            weights[index[object_id], j] = weight
+            if weight == 0 and flows[object_id] > 0:
+                cutoffs.append((process.id, object_id))
 
-    return weights, cutoffs
+    return weights, sinks, cutoffs
 
 
-def _check_conservation_residuals(processes, X, Y, U_eff, T, in_scope, mu, beta, b, slice_names):
+def _check_conservation_residuals(
+    processes, X, Y, U_eff, T, in_scope, mu, beta, b, slice_names, sinks
+):
     """Per-slice: Sum_i mu_i*boundary_output_i + sink_terms - Sum_j(in scope) b_j*Y_j.
 
     Should be ~0 for every slice if mu/beta were solved consistently.
@@ -380,12 +544,14 @@ def _check_conservation_residuals(processes, X, Y, U_eff, T, in_scope, mu, beta,
     deficit relative to the *scoped* subset of processes, using the same
     Y-scaling as the primary mu/beta solve). sink_terms account for burden
     that the per-object mu accounting cannot capture: the entire Y_j*beta_j of
-    any in-scope process producing nothing at all (pure removal/export/sink
-    processes), plus the has_stock (X_j != Y_j) net-accumulation discrepancy
-    for processes that do produce something.
+    any in-scope sink -- a process whose burden no output bears, whether
+    because it produces nothing at all or because the allocation rule weights
+    every output at zero -- plus the has_stock (X_j != Y_j) net-accumulation
+    discrepancy for processes whose outputs do bear burden.
     """
     M = len(processes)
     N = len(T)
+    sinks = set(sinks)
     residuals = {}
 
     for col, name in enumerate(slice_names):
@@ -406,7 +572,7 @@ def _check_conservation_residuals(processes, X, Y, U_eff, T, in_scope, mu, beta,
         for j, p in enumerate(processes):
             if not in_scope[j]:
                 continue
-            if len(p.produces) == 0:
+            if p.id in sinks:
                 sink_terms += Y[j] * beta[j, col]
             elif X[j] != Y[j]:
                 extra = sum(U_eff[i, j] * mu[i, col] for i in range(N) if U_eff[i, j] != 0)

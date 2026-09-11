@@ -31,10 +31,19 @@
 
 ### Changed
 
+- **Allocation rules** must now be expressed in a new structure. This is more
+  robust because it ensures all of a process's outputs are handled at once. The
+  new rule names are `Mass`, `ByProperty`, `Fixed`, `Excluding` (to allocate no
+  burden to certain objects) and `Rules` (a container for default allocation
+  rules with per-process overrides). `Allocation` now has a `wastes=` shorthand
+  to simultaneously set objects as cutoff (no burden on input to processes) and
+  with zero allocation.
+
 - **Resolving placeholder symbols moved off `ModelStructure`.**
   `ModelStructure.resolve_structural_symbols()` has been removed. Use
   `SympyModel.resolve(expr)`, or just pass expressions to `eval()`/`lambdify()`,
   which resolve them for you.
+
 - **Compiling is now `SympyCompiler`** (in `flowprog.backends.sympy`), which
   walks the steps and accumulates activities and object balances;
   `SympyModel.from_steps()` is a thin wrapper over it. `SympyModel.__init__`
@@ -50,6 +59,7 @@
   previously an empty process list (e.g. `limit_to_processes` matching
   nothing) fell through Python's builtin `sum()` with no start value and
   returned a plain `int 0`.
+
 - Serialisation format bumped to `"1.2"` (`ModelBuilder.save`/`load`) and
   `"1.1"` (`SympyModel.save`/`load`) to include elementary exchange
   declarations and B recipe entries; older files still load (with a

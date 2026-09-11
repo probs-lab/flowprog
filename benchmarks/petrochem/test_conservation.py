@@ -12,7 +12,7 @@ import pytest
 from structure import load_data, build_structure
 from model import define_model
 from model_polymers import PROCESS_GROUPS
-from flowprog.allocation import Allocation, MassAllocation, Scope
+from flowprog.allocation import Allocation, ByValue, Scope
 
 
 def _build_evaluable_model():
@@ -35,7 +35,7 @@ def evaluable_model():
 
 def test_conservation_whole_system(evaluable_model):
     model, params = evaluable_model
-    result = Allocation(model, params, MassAllocation()).result
+    result = Allocation(model, params, ByValue()).result
     assert result.check_conservation(atol=1e-4)
 
 
@@ -44,7 +44,7 @@ def test_conservation_cradle_to_gate_with_stock_terms(evaluable_model):
     whose net accumulation shows up as a conservation-check stock term."""
     model, params = evaluable_model
     scope = Scope(excluded_processes=frozenset(PROCESS_GROUPS["end_of_life"]))
-    result = Allocation(model, params, MassAllocation(), scope=scope).result
+    result = Allocation(model, params, ByValue(), scope=scope).result
 
     has_stock_in_scope = [
         p.id

@@ -31,6 +31,10 @@
 
 ### Changed
 
+- Internal allocation changes to handle processes whose reference flow is an
+  input, and with possible stock accumulation. Process intensities are no longer
+  calculated for processes with zero activity.
+
 - **Allocation rules** must now be expressed in a new structure. This is more
   robust because it ensures all of a process's outputs are handled at once. The
   new rule names are `Mass`, `ByProperty`, `Fixed`, `Excluding` (to allocate no

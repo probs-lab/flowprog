@@ -16,6 +16,15 @@ There are two related calculations:
   special case of the general allocation that can be implemented symbolically,
   so the resulting expressions can be compiled to standalone code.
 
+Stocks
+------
+
+A process with `has_stock` can take in more than it puts out, or less (``X !=
+Y``). By default, output flows carry burdens based on the input flows scaled to
+the output activity, so material flowing out has the same burden intensity as
+the material flowing in. The difference in absolute burden is reported per
+process as ``meta["stock_burden"]``.
+
 Allocation rules
 ----------------
 
@@ -268,7 +277,8 @@ class AllocationResult:
     :param meta: dict with keys "rule", "scope", "cutoffs" (list of
         (process_id, object_id) pairs with a deliberate zero-weight cutoff on
         a nonzero flow), "sinks" (processes whose burden is not further allocated),
-        "zero_supply_objects", "conservation_residuals"
+        "stock_burden" (processes x slices, burden accumulated in or released
+        from each process's stock),"zero_supply_objects", "conservation_residuals"
     """
 
     object_intensities: pd.DataFrame
@@ -279,14 +289,22 @@ class AllocationResult:
     def check_conservation(self, atol: float = 1e-6) -> bool:
         """Check the 100% rule for every slice.
 
-        Within scope: Sum_i mu_i * boundary_output_i + sink/stock terms ==
-        Sum_j(in scope) b_j * Y_j (raw, uncharacterised-consistent per slice).
+        All burdens from the in-scope processes should be accounted for in three
+        categories: attached to an object crossing the scope boundary, retained
+        by a sink process, or accumulated in a process's stock.
 
-        :raises AssertionError: If conservation fails for any slice beyond `atol`.
+        :raises AssertionError: If conservation fails for any slice beyond
+            `atol`, or if any slice's residual is undefined.
         :return: True if conservation holds for all slices.
+
         """
         residuals = self.meta["conservation_residuals"]
-        bad = {k: v for k, v in residuals.items() if not np.isnan(v) and abs(v) > atol}
+        undefined = sorted(k for k, v in residuals.items() if np.isnan(v))
+        if undefined:
+            raise AssertionError(
+                f"Conservation is undefined for slices: {undefined}"
+            )
+        bad = {k: v for k, v in residuals.items() if abs(v) > atol}
         if bad:
             raise AssertionError(f"Conservation failed for slices: {bad}")
         return True
@@ -352,41 +370,21 @@ class Allocation:
         X, Y, S, U, B = _numeric_arrays(model, self.values)
 
         in_scope = np.array([self.scope.process_included(p.id) for p in processes])
-        waste_idx = {model.structure.lookup_object(o) for o in self.scope.waste_objects}
-
-        # Effective U: cut off waste-object *input* burden if configured.
-        U_eff = U.copy()
-        if self.scope.waste_input_burden == "cutoff":
-            for i in waste_idx:
-                U_eff[i, :] = 0.0
+        roles = _flow_roles(model.structure, self.scope, X, Y, S, U)
 
         T = np.array(
-            [sum(Y[j] * S[i, j] for j in range(M) if in_scope[j]) for i in range(N)]
+            [
+                sum(roles.borne[i, j] for j in range(M) if in_scope[j])
+                for i in range(N)
+            ]
         )
 
         _validate(self.rule, model.structure)
         weights, sinks, cutoffs = _allocation_weights(
-            self.rule, model.structure, S, in_scope
+            self.rule, model.structure, roles, in_scope
         )
 
         zero_supply = [i for i in range(N) if T[i] == 0]
-        for i in zero_supply:
-            _log.warning(
-                "Allocation: object %r has zero total in-scope supply; its "
-                "intensity will be NaN.",
-                objects[i].id,
-            )
-
-        # M[i, k] = sum_{j produces i, in scope} (Y_j * w_ij / T_i) * U_eff[k, j]
-        # (tag-independent: solved once for all slices as multiple RHS).
-        Mmat = np.zeros((N, N))
-        for i in range(N):
-            if T[i] == 0:
-                continue
-            for j in range(M):
-                if not in_scope[j] or weights[i, j] == 0:
-                    continue
-                Mmat[i, :] += (Y[j] * weights[i, j] / T[i]) * U_eff[:, j]
 
         slice_names = [exc.id for exc in exchanges] + list(self.characterise.keys())
         q_vectors = {}
@@ -397,21 +395,28 @@ class Allocation:
         for name, factors in self.characterise.items():
             q_vectors[name] = np.array([factors.get(exc.id, 0) for exc in exchanges])
 
-        b = {name: q_vectors[name] @ B for name in slice_names}
+        # Direct burden as a total per process, on the same basis as the flow
+        # quantities.
+        direct = (
+            np.vstack([q_vectors[name] @ B for name in slice_names])
+            if slice_names
+            else np.zeros((0, M))
+        ) * Y
 
-        C = np.zeros((N, len(slice_names)))
-        for col, name in enumerate(slice_names):
-            bt = b[name]
-            for i in range(N):
-                if T[i] == 0:
-                    C[i, col] = np.nan
+        # M[i, k] = sum_{j bears i, in scope} (w_ij / T_i) * carried[k, j]
+        # (slice-independent: solved once for all slices as multiple RHS).
+        Mmat = np.zeros((N, N))
+        C = np.full((N, len(slice_names)), np.nan)
+        for i in range(N):
+            if T[i] == 0:
+                continue
+            C[i, :] = 0.0
+            for j in range(M):
+                if not in_scope[j] or weights[i, j] == 0:
                     continue
-                total = 0.0
-                for j in range(M):
-                    if not in_scope[j] or weights[i, j] == 0:
-                        continue
-                    total += Y[j] * weights[i, j] / T[i] * bt[j]
-                C[i, col] = total
+                share = weights[i, j] / T[i]
+                Mmat[i, :] += share * roles.carried[:, j]
+                C[i, :] += share * direct[:, j]
 
         # Zero-supply objects are excluded from the dense solve entirely
         # (not just given a NaN row) -- a NaN RHS entry inside a full
@@ -428,24 +433,35 @@ class Allocation:
             for row, i in enumerate(solvable):
                 mu[i, :] = sub_mu[row, :]
 
-        # beta_j = b_j + sum_i U_eff[i,j] * mu_i (per unit Y_j; plain
-        # elementwise arithmetic here, so a genuine dependency on a
-        # zero-supply object correctly and safely yields NaN for this process
-        # only, without any matrix-solve contamination risk).
-        beta = np.full((M, len(slice_names)), np.nan)
-        for col, name in enumerate(slice_names):
-            bt = b[name]
-            for j in range(M):
-                if not in_scope[j]:
-                    continue
-                total = bt[j]
-                for i in range(N):
-                    if U_eff[i, j] != 0:
-                        total += U_eff[i, j] * mu[i, col]
-                beta[j, col] = total
+        # The burden each process hands on (`out_burden`: its own emissions
+        # plus what its bearers are charged for the objects it took in) and
+        # the burden that reached it (`in_burden`). An object with no modelled
+        # supply contributes zero, but these are tracked as "unresolved".
+        resolved = np.nan_to_num(mu)
+        out_burden = np.zeros((len(slice_names), M))
+        in_burden = np.zeros((len(slice_names), M))
+        unresolved = np.zeros(M, dtype=bool)
+        for j in range(M):
+            if not in_scope[j]:
+                continue
+            out_burden[:, j] = direct[:, j] + roles.carried[:, j] @ resolved
+            in_burden[:, j] = roles.paid[:, j] @ resolved
+            unresolved[j] = any(
+                T[i] == 0 and roles.carried[i, j] != 0 for i in range(N)
+            )
+
+        # Reported per unit of the process's reference activity; a process
+        # with none has no unit to report against.
+        reference = roles.reference_activity
+        beta = np.where(
+            (in_scope & (reference != 0) & ~unresolved)[:, None],
+            out_burden.T / np.where(reference != 0, reference, 1.0)[:, None],
+            np.nan,
+        )
 
         residuals = _check_conservation_residuals(
-            processes, X, Y, U_eff, T, in_scope, mu, beta, b, slice_names, sinks
+            processes, roles, T, in_scope, mu, out_burden, in_burden,
+            direct, slice_names, sinks
         )
 
         object_intensities = pd.DataFrame(
@@ -456,10 +472,10 @@ class Allocation:
         )
 
         sigma_rows = [
-            (objects[i].id, processes[j].id, Y[j] * S[i, j] / T[i])
+            (objects[i].id, processes[j].id, roles.borne[i, j] / T[i])
             for i in range(N)
             for j in range(M)
-            if S[i, j] > 0 and in_scope[j] and T[i] > 0
+            if roles.borne[i, j] > 0 and in_scope[j] and T[i] > 0
         ]
         supply_shares = pd.DataFrame(sigma_rows, columns=["object", "process", "sigma"])
 
@@ -469,6 +485,10 @@ class Allocation:
             "cutoffs": cutoffs,
             "sinks": sinks,
             "zero_supply_objects": [objects[i].id for i in zero_supply],
+            "stock_burden": _stock_burden(
+                processes, roles, in_scope, in_burden, out_burden, direct,
+                slice_names
+            ),
             "conservation_residuals": residuals,
         }
 
@@ -478,6 +498,63 @@ class Allocation:
             supply_shares=supply_shares,
             meta=meta,
         )
+
+
+@dataclass(frozen=True)
+class _FlowRoles:
+    """Which of each process's flows bear its burden, and which pay into it.
+
+    Burden leaves a process along its *bearer* flows, split between them by the
+    allocation rule, and enters along its *payer* flows, carrying the intensity
+    of the object that flows. It is described in this way, rather than "inputs"
+    and "outputs", so that the accounting will also work for processes whose
+    determining flow is an input, like waste treatment.
+
+    `paid` and `carried` describe the same payer flows twice, scaled to the
+    input (X) and output (Y) activities of the process respectively. They differ
+    only for processes with stock accumulation occurring at the operating point.
+    `paid` is what the process actually took in, while `carried` is what
+    downstream bearers are charged for. Its default is the payer flows scaled to
+    the reference activity, which says the stock is transparent -- it holds and
+    releases material at the intensity of what is flowing in. In principle it
+    could be overriden to account for burdens linked to dynamic stock cohorts.
+
+    The gap ``paid - carried`` is reported per process.
+
+    :param bearers: Per process, the object ids bearing its burden.
+    :param reference_activity: Per process, the activity its bearer flows are
+        keyed to, and the basis its intensity is reported per unit of.
+    :param borne: N x M quantity along each bearer flow.
+    :param paid: N x M quantity along each payer flow, as taken in.
+    :param carried: N x M payer quantity this period's bearers are charged for.
+
+    """
+
+    bearers: tuple
+    reference_activity: np.ndarray
+    borne: np.ndarray
+    paid: np.ndarray
+    carried: np.ndarray
+
+
+def _flow_roles(structure, scope, X, Y, S, U) -> _FlowRoles:
+    """Assign a role to each flow of each process.
+
+    A process's outputs bear its burden, keyed to its output activity `Y`; its
+    inputs pay into it, keyed to its input activity `X`. An input of a waste
+    object under a cut-off `Scope` is ignored.
+    """
+    use = U.copy()
+    if scope.waste_input_burden == "cutoff":
+        for object_id in scope.waste_objects:
+            use[structure.lookup_object(object_id), :] = 0.0
+    return _FlowRoles(
+        bearers=tuple(tuple(p.produces) for p in structure.processes),
+        reference_activity=Y,
+        borne=Y * S,
+        paid=X * use,
+        carried=Y * use,
+    )
 
 
 def _normalised_weights(rule, process, flows):
@@ -503,15 +580,15 @@ def _normalised_weights(rule, process, flows):
     return {object_id: w / total for object_id, w in weights.items()}
 
 
-def _allocation_weights(rule, structure, S, in_scope):
-    """Ask `rule` to split every in-scope process's burden across its outputs.
+def _allocation_weights(rule, structure, roles, in_scope):
+    """Ask `rule` to split every in-scope process's burden across its bearers.
 
     :return: ``(weights, sinks, cutoffs)`` -- an N x M array of normalised
         weights; the ids of processes whose burden is not further allocated;
         and ``(process_id, object_id)`` pairs given zero weight despite a
         nonzero output flow.
     """
-    weights = np.zeros((len(structure.objects), len(structure.processes)))
+    weights = np.zeros(roles.borne.shape)
     sinks, cutoffs = [], []
 
     for j, process in enumerate(structure.processes):
@@ -519,9 +596,9 @@ def _allocation_weights(rule, structure, S, in_scope):
             continue
         index = {
             object_id: structure.lookup_object(object_id)
-            for object_id in process.produces
+            for object_id in roles.bearers[j]
         }
-        flows = {object_id: S[i, j] for object_id, i in index.items()}
+        flows = {object_id: roles.borne[i, j] for object_id, i in index.items()}
         shares = _normalised_weights(rule, process, flows)
         if shares is None:
             sinks.append(process.id)
@@ -534,52 +611,65 @@ def _allocation_weights(rule, structure, S, in_scope):
     return weights, sinks, cutoffs
 
 
-def _check_conservation_residuals(
-    processes, X, Y, U_eff, T, in_scope, mu, beta, b, slice_names, sinks
-):
-    """Per-slice: Sum_i mu_i*boundary_output_i + sink_terms - Sum_j(in scope) b_j*Y_j.
+def _stock_burden(processes, roles, in_scope, in_burden, out_burden, direct,
+                  slice_names) -> pd.DataFrame:
+    """Burden that went into (+) or came out of (-) each process's stock.
 
-    Should be ~0 for every slice if mu/beta were solved consistently.
-    boundary_output_i = T_i - sum_{j in scope} Y_j * U_eff[i,j] (consumption
-    deficit relative to the *scoped* subset of processes, using the same
-    Y-scaling as the primary mu/beta solve). sink_terms account for burden
-    that the per-object mu accounting cannot capture: the entire Y_j*beta_j of
-    any in-scope sink -- a process whose burden no output bears, whether
-    because it produces nothing at all or because the allocation rule weights
-    every output at zero -- plus the has_stock (X_j != Y_j) net-accumulation
-    discrepancy for processes whose outputs do bear burden.
+    Zero for every process taking in what it puts out, so only the processes
+    accumulating or depleting a stock appear.
+    """
+    rows = {
+        p.id: in_burden[:, j] - (out_burden[:, j] - direct[:, j])
+        for j, p in enumerate(processes)
+        if in_scope[j] and np.any(roles.paid[:, j] != roles.carried[:, j])
+    }
+    return pd.DataFrame(rows.values(), index=list(rows), columns=slice_names)
+
+
+def _check_conservation_residuals(
+    processes, roles, T, in_scope, mu, out_burden, in_burden, direct,
+    slice_names, sinks
+):
+    """Per-slice: boundary output + sinks + stock accumulation - direct burden.
+
+    Burden entering the system as a process's own emissions should balance via:
+
+    - objects crossing the boundary (the consumption deficit within scope);
+    - sink processes (with no outputs to allocate its burden to);
+    - process stock accumulation.
+
+    An object with no modelled supply is assumed to contribute zero, exactly as
+    the `mu` solve treats it.
+
     """
     M = len(processes)
     N = len(T)
     sinks = set(sinks)
     residuals = {}
 
+    paid_total = np.array(
+        [
+            sum(roles.paid[i, j] for j in range(M) if in_scope[j])
+            for i in range(N)
+        ]
+    )
+
     for col, name in enumerate(slice_names):
-        bt = b[name]
-
-        boundary_output = T - np.array(
-            [
-                sum(Y[j] * U_eff[i, j] for j in range(M) if in_scope[j])
-                for i in range(N)
-            ]
+        boundary = sum(
+            mu[i, col] * (T[i] - paid_total[i]) for i in range(N) if T[i] != 0
         )
-
-        lhs = sum(
-            mu[i, col] * boundary_output[i] for i in range(N) if T[i] != 0
+        retained = sum(
+            out_burden[col, j]
+            for j, p in enumerate(processes)
+            if in_scope[j] and p.id in sinks
         )
-
-        sink_terms = 0.0
-        for j, p in enumerate(processes):
-            if not in_scope[j]:
-                continue
-            if p.id in sinks:
-                sink_terms += Y[j] * beta[j, col]
-            elif X[j] != Y[j]:
-                extra = sum(U_eff[i, j] * mu[i, col] for i in range(N) if U_eff[i, j] != 0)
-                sink_terms += (X[j] - Y[j]) * extra
-
-        rhs = sum(bt[j] * Y[j] for j in range(M) if in_scope[j])
-        residuals[name] = lhs + sink_terms - rhs
+        into_stock = sum(
+            in_burden[col, j] - (out_burden[col, j] - direct[col, j])
+            for j in range(M)
+            if in_scope[j]
+        )
+        emitted = sum(direct[col, j] for j in range(M) if in_scope[j])
+        residuals[name] = boundary + retained + into_stock - emitted
 
     return residuals
 

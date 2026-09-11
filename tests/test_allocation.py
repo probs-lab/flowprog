@@ -10,6 +10,7 @@ from flowprog import ModelBuilder, Process, Object, ElementaryExchange
 from flowprog.boundary_processes import Import, Export, add_boundary_processes
 from flowprog.allocation import (
     Allocation,
+    AllocationResult,
     ByProperty,
     Excluding,
     Fixed,
@@ -265,22 +266,6 @@ class TestSupplyShares:
 
 
 class TestZeroSupplyObject:
-    def test_zero_supply_gives_nan_with_warning(self, caplog):
-        import logging
-
-        processes = [Process("P1", produces=["out"], consumes=[], exchanges=["CO2"])]
-        objects = [MObject("out", has_market=True)]
-        exchanges = [MExchange("CO2")]
-        builder = ModelBuilder(processes, objects, exchanges)
-        builder.add({builder.Y[0]: 0})
-        model = builder.build({"P1": {"produces": {"out": 1.0}, "exchanges": {"CO2": 5.0}}})
-
-        with caplog.at_level(logging.WARNING):
-            result = Allocation(model, {}, ByValue()).result
-
-        assert np.isnan(result.object_intensities.loc["out", "CO2"])
-        assert any("zero" in rec.message.lower() or "supply" in rec.message.lower() for rec in caplog.records)
-
     def test_nan_does_not_propagate_to_unrelated_objects(self):
         processes = [
             Process("P1", produces=["out1"], consumes=[], exchanges=["CO2"]),
@@ -468,6 +453,82 @@ class TestRecyclateLoop:
             Allocation(
                 model, {demand: 100}, ByValue(), scope=Scope(), wastes={"Waste"}
             )
+
+
+# ============================================================================
+# Stock accumulation: a process taking in more (or less) than it puts out.
+#
+#   SourceOfOre --Ore--> Warehouse --StoredOre--> Factory --Product-->
+#
+# Warehouse buys X x 1 ore at mu = 2, ships Y x 1 stored ore, emits 0.5 per
+# unit shipped. Running two periods that cancel out (X=15/Y=10 then X=5/Y=10)
+# must give each period the same intensities as one combined period with no
+# net accumulation (X=Y=20).
+# ============================================================================
+
+
+def build_stock_model(x_level, y_level):
+    from flowprog import ModelStructure
+
+    processes = [
+        Process("SourceOfOre", produces=["Ore"], consumes=[], exchanges=["CO2"]),
+        Process("Warehouse", produces=["StoredOre"], consumes=["Ore"],
+                has_stock=True, exchanges=["CO2"]),
+        Process("Factory", produces=["Product"], consumes=["StoredOre"]),
+    ]
+    objects = [MObject("Ore", has_market=True), MObject("StoredOre", has_market=True),
+               MObject("Product", has_market=True)]
+    structure = ModelStructure(processes, objects, [MExchange("CO2")])
+    builder = ModelBuilder.from_structure(structure)
+    builder.add({builder.Y[1]: y_level, builder.X[1]: x_level})
+    builder.add({builder.Y[0]: builder.X[1] * 1.0})       # ore bought is X * U
+    builder.add({builder.X[2]: builder.Y[1] * 1.0, builder.Y[2]: builder.Y[1] * 1.0})
+    recipe = {
+        "SourceOfOre": {"produces": {"Ore": 1.0}, "exchanges": {"CO2": 2.0}},
+        "Warehouse": {"consumes": {"Ore": 1.0}, "produces": {"StoredOre": 1.0},
+                      "exchanges": {"CO2": 0.5}},
+        "Factory": {"consumes": {"StoredOre": 1.0}, "produces": {"Product": 1.0}},
+    }
+    return builder.build(recipe)
+
+
+class TestStockAccumulation:
+    PERIODS = {"filling": (15.0, 10.0), "draining": (5.0, 10.0),
+               "combined": (20.0, 20.0)}
+
+    def _result(self, key):
+        return Allocation(build_stock_model(*self.PERIODS[key]), {}, ByValue()).result
+
+    def test_intensities_match_the_combined_period(self):
+        combined = self._result("combined").object_intensities
+        for key in ("filling", "draining"):
+            period = self._result(key).object_intensities
+            pd.testing.assert_frame_equal(period, combined)
+
+    def test_stock_burden_is_the_gap_between_what_was_bought_and_charged(self):
+        # 5 units of ore either side of what was shipped, at mu[Ore] = 2.
+        assert self._result("filling").meta["stock_burden"].loc[
+            "Warehouse", "CO2"] == pytest.approx(10.0)
+        assert self._result("draining").meta["stock_burden"].loc[
+            "Warehouse", "CO2"] == pytest.approx(-10.0)
+
+    def test_no_stock_burden_when_the_two_sides_match(self):
+        assert len(self._result("combined").meta["stock_burden"]) == 0
+
+    def test_conservation_holds_in_every_period(self):
+        for key in self.PERIODS:
+            assert self._result(key).check_conservation(atol=1e-9)
+
+
+class TestConservationCheck:
+    def test_undefined_residual_is_a_failure_not_a_pass(self):
+        empty = pd.DataFrame()
+        result = AllocationResult(
+            empty, empty, empty,
+            {"conservation_residuals": {"CO2": float("nan"), "CH4": 0.0}},
+        )
+        with pytest.raises(AssertionError, match="undefined"):
+            result.check_conservation()
 
 
 class TestResultMeta:

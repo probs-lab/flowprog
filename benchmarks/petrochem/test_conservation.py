@@ -1,6 +1,6 @@
 """Acceptance test 4: conservation on the petrochemical model.
 
-Runs flowprog.allocation.Allocation on the full petrochem model at named
+Runs flowprog.allocation.AllocatedSystem on the full petrochem model at named
 scenarios' parameter values, and checks the 100% conservation rule holds --
 both whole-system and cradle-to-gate (excluding the end-of-life process
 group, which exercises the has_stock net-accumulation "stock burden" via the
@@ -12,7 +12,7 @@ import pytest
 from structure import load_data, build_structure
 from model import define_model
 from model_polymers import PROCESS_GROUPS
-from flowprog.allocation import Allocation, ByValue, Scope
+from flowprog.allocation import AllocatedSystem, ByValue, Scope
 
 
 #: Scenarios to check. The conservation rule should hold at every operating
@@ -40,7 +40,7 @@ def evaluable_model():
 def test_conservation_whole_system(evaluable_model, scenario):
     model, scenarios = evaluable_model
     params = scenarios[scenario]["params"]
-    result = Allocation(model, params, ByValue()).result
+    result = AllocatedSystem(model, params, ByValue())
     assert result.check_conservation(atol=ATOL)
 
 
@@ -51,7 +51,7 @@ def test_conservation_cradle_to_gate_with_stock_burden(evaluable_model, scenario
     model, scenarios = evaluable_model
     params = scenarios[scenario]["params"]
     scope = Scope(excluded_processes=frozenset(PROCESS_GROUPS["end_of_life"]))
-    result = Allocation(model, params, ByValue(), scope=scope).result
+    result = AllocatedSystem(model, params, ByValue(), scope=scope)
 
     has_stock_in_scope = [
         p.id
@@ -59,6 +59,6 @@ def test_conservation_cradle_to_gate_with_stock_burden(evaluable_model, scenario
         if p.has_stock and p.id not in scope.excluded_processes
     ]
     assert has_stock_in_scope  # sanity check the UseOf* processes are in scope
-    assert len(result.meta["stock_burden"]) > 0
+    assert len(result.stock_burden) > 0
 
     assert result.check_conservation(atol=ATOL)

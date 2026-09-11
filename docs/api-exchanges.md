@@ -51,5 +51,31 @@ place where cradle-to-gate / embodied emissions are linked into the model.
 
 ```{eval-rst}
 .. automodule:: flowprog.allocation
+
+.. autoclass:: flowprog.allocation.AllocatedSystem
+    :members:
+
+.. autoclass:: flowprog.allocation.Scope
+    :members:
+
+.. automodule:: flowprog.allocation.rules
+    :members:
+
+.. autoclass:: flowprog.allocation.PassThrough
+    :members:
+```
+
+## Contribution analysis
+
+An allocated system gives the burden carried by a unit of each object.
+Contribution analysis breaks one of those burdens down, by choosing a set of
+processes to expand: those are reported with their own direct burdens, and
+everything they take in from elsewhere is collapsed into the cradle-to-gate
+burden of the input it came in as. Choosing a different set is how the same
+product is reported coarsely or in detail, and in more detail along one part of
+its supply chain than another.
+
+```{eval-rst}
+.. automodule:: flowprog.allocation.contributions
     :members:
 ```

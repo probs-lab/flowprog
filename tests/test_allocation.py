@@ -9,8 +9,7 @@ from rdflib import URIRef
 from flowprog import ModelBuilder, Process, Object, ElementaryExchange
 from flowprog.boundary_processes import Import, Export, add_boundary_processes
 from flowprog.allocation import (
-    Allocation,
-    AllocationResult,
+    AllocatedSystem,
     ByProperty,
     Excluding,
     Fixed,
@@ -151,16 +150,16 @@ class TestRules:
     def test_unknown_ids_are_rejected(self):
         model, demand = build_toy_model()
         with pytest.raises(ValueError, match="Smelteng"):
-            Allocation(model, {demand: 12}, Rules(ByValue(), {"Smelteng": ByValue()}))
+            AllocatedSystem(model, {demand: 12}, Rules(ByValue(), {"Smelteng": ByValue()}))
         with pytest.raises(ValueError, match="MetalC"):
-            Allocation(model, {demand: 12}, Excluding({"MetalC"}, ByValue()))
+            AllocatedSystem(model, {demand: 12}, Excluding({"MetalC"}, ByValue()))
 
 
 class TestToyAnalyticMassAllocation:
     def test_mu_and_beta_match_hand_computation(self):
         model, demand = build_toy_model()
         values = {demand: 12}
-        result = Allocation(model, values, ByValue()).result
+        result = AllocatedSystem(model, values, ByValue())
 
         # Demand 12 --> Y_Smelting = 12/0.6 = 20.
         # Ore production = 20 * 2 = 40.
@@ -186,7 +185,7 @@ class TestToyAnalyticMassAllocation:
     def test_conservation_holds(self):
         model, demand = build_toy_model()
         values = {demand: 12}
-        result = Allocation(model, values, ByValue()).result
+        result = AllocatedSystem(model, values, ByValue())
         assert result.check_conservation(atol=1e-6)
 
     def test_export_is_boundary_output_not_cradle_to_gate(self):
@@ -195,13 +194,13 @@ class TestToyAnalyticMassAllocation:
         model, demand = build_toy_model()
         values = {demand: 12}
 
-        whole_system = Allocation(model, values, ByValue()).result
-        cradle_to_gate = Allocation(
+        whole_system = AllocatedSystem(model, values, ByValue())
+        cradle_to_gate = AllocatedSystem(
             model,
             values,
             ByValue(),
             scope=Scope(excluded_processes=frozenset({"ExportsOfMetalB"})),
-        ).result
+        )
 
         # Whole-system: export's direct burden is reachable (present in totals)
         assert whole_system.process_intensities.loc["ExportsOfMetalB", "CO2"] == pytest.approx(27)
@@ -219,7 +218,7 @@ class TestToyAnalyticFixedWeights:
         model, demand = build_toy_model()
         values = {demand: 12}
         rule = Rules(ByValue(), {"Smelting": Fixed({"MetalA": 0.8, "MetalB": 0.2})})
-        result = Allocation(model, values, rule).result
+        result = AllocatedSystem(model, values, rule)
 
         mu = result.object_intensities
         assert mu.loc["MetalA", "CO2"] == pytest.approx(100 / 3)
@@ -232,7 +231,7 @@ class TestToyAnalyticFixedWeights:
         model, demand = build_toy_model()
         values = {demand: 12}
         rule = Rules(ByValue(), {"Smelting": Fixed({"MetalA": 0.8, "MetalB": 0.2})})
-        result = Allocation(model, values, rule).result
+        result = AllocatedSystem(model, values, rule)
         assert result.check_conservation(atol=1e-6)
 
 
@@ -242,7 +241,7 @@ class TestNoDefaultRule:
         values = {demand: 12}
         rule = Fixed({})  # no weights for anything
         with pytest.raises(ValueError, match="Smelting"):
-            Allocation(model, values, rule)
+            AllocatedSystem(model, values, rule)
 
 
 class TestZeroWeightCutoffRecorded:
@@ -250,15 +249,15 @@ class TestZeroWeightCutoffRecorded:
         model, demand = build_toy_model()
         values = {demand: 12}
         rule = Rules(ByValue(), {"Smelting": Fixed({"MetalA": 1.0, "MetalB": 0.0})})
-        result = Allocation(model, values, rule).result
-        assert ("Smelting", "MetalB") in result.meta["cutoffs"]
+        result = AllocatedSystem(model, values, rule)
+        assert ("Smelting", "MetalB") in result.cutoffs
 
 
 class TestSupplyShares:
     def test_supply_shares_sum_to_one_per_object(self):
         model, demand = build_toy_model()
         values = {demand: 12}
-        result = Allocation(model, values, ByValue()).result
+        result = AllocatedSystem(model, values, ByValue())
         sigma = result.supply_shares
         for obj_id in ("Ore", "MetalA", "MetalB"):
             total = sigma[sigma["object"] == obj_id]["sigma"].sum()
@@ -281,7 +280,7 @@ class TestZeroSupplyObject:
                 "P2": {"produces": {"out2": 1.0}, "exchanges": {"CO2": 3.0}},
             }
         )
-        result = Allocation(model, {}, ByValue()).result
+        result = AllocatedSystem(model, {}, ByValue())
         assert np.isnan(result.object_intensities.loc["out1", "CO2"])
         assert result.object_intensities.loc["out2", "CO2"] == pytest.approx(3.0)
 
@@ -296,7 +295,7 @@ class TestNegativeMuNotClipped:
         model = builder.build(
             {"P1": {"produces": {"out": 1.0}, "exchanges": {"CO2": -3.5}}}
         )
-        result = Allocation(model, {}, ByValue()).result
+        result = AllocatedSystem(model, {}, ByValue())
         assert result.object_intensities.loc["out", "CO2"] == pytest.approx(-3.5)
 
 
@@ -334,7 +333,7 @@ class TestLinearModelEquivalence:
         }
         model = builder.build(recipe)
 
-        result = Allocation(model, {demand: 1}, ByValue()).result
+        result = AllocatedSystem(model, {demand: 1}, ByValue())
         mu_out = result.object_intensities.loc["out", "CO2"]
 
         # Compare to pulling a unit demand of "out" directly and summing elementary flows
@@ -403,7 +402,7 @@ class TestRecyclateLoop:
     def test_cutoff_breaks_loop_and_conserves(self):
         model, demand = self._model()
         scope = Scope(waste_objects=frozenset({"Waste"}), waste_input_burden="cutoff")
-        result = Allocation(model, {demand: 100}, ByValue(), scope=scope).result
+        result = AllocatedSystem(model, {demand: 100}, ByValue(), scope=scope)
         assert result.check_conservation(atol=1e-6)
         # Recycled product's mu should be lower than virgin-only mu (cheaper: no Raw import burden)
         assert result.process_intensities.loc["Recycling", "CO2"] == pytest.approx(0.5)
@@ -411,7 +410,7 @@ class TestRecyclateLoop:
     def test_loop_without_cutoff_solves_and_conserves(self):
         model, demand = self._model()
         scope = Scope(waste_input_burden="propagate")
-        result = Allocation(model, {demand: 100}, ByValue(), scope=scope).result
+        result = AllocatedSystem(model, {demand: 100}, ByValue(), scope=scope)
         assert result.check_conservation(atol=1e-6)
 
     def test_excluding_the_waste_makes_its_producer_a_sink(self):
@@ -419,29 +418,29 @@ class TestRecyclateLoop:
         with no bearer: the process is a sink, and its burden is accounted for
         as such rather than attributed to any object."""
         model, demand = self._model()
-        result = Allocation(
+        result = AllocatedSystem(
             model,
             {demand: 100},
             Excluding({"Waste"}, ByValue()),
             scope=Scope(waste_input_burden="propagate"),
-        ).result
+        )
 
-        assert result.meta["sinks"] == ["Use"]
+        assert result.sinks == ("Use",)
         assert result.object_intensities.loc["Waste", "CO2"] == pytest.approx(0.0)
         assert result.process_intensities.loc["Recycling", "CO2"] == pytest.approx(0.5)
         assert result.check_conservation(atol=1e-6)
 
     def test_wastes_shorthand_sets_both_halves(self):
         model, demand = self._model()
-        shorthand = Allocation(model, {demand: 100}, ByValue(), wastes={"Waste"}).result
-        spelled_out = Allocation(
+        shorthand = AllocatedSystem(model, {demand: 100}, ByValue(), wastes={"Waste"})
+        spelled_out = AllocatedSystem(
             model,
             {demand: 100},
             Excluding({"Waste"}, ByValue()),
             scope=Scope(
                 waste_objects=frozenset({"Waste"}), waste_input_burden="cutoff"
             ),
-        ).result
+        )
         pd.testing.assert_frame_equal(
             shorthand.object_intensities, spelled_out.object_intensities
         )
@@ -450,7 +449,7 @@ class TestRecyclateLoop:
     def test_wastes_and_scope_together_is_an_error(self):
         model, demand = self._model()
         with pytest.raises(ValueError, match="not both"):
-            Allocation(
+            AllocatedSystem(
                 model, {demand: 100}, ByValue(), scope=Scope(), wastes={"Waste"}
             )
 
@@ -497,7 +496,7 @@ class TestStockAccumulation:
                "combined": (20.0, 20.0)}
 
     def _result(self, key):
-        return Allocation(build_stock_model(*self.PERIODS[key]), {}, ByValue()).result
+        return AllocatedSystem(build_stock_model(*self.PERIODS[key]), {}, ByValue())
 
     def test_intensities_match_the_combined_period(self):
         combined = self._result("combined").object_intensities
@@ -507,13 +506,13 @@ class TestStockAccumulation:
 
     def test_stock_burden_is_the_gap_between_what_was_bought_and_charged(self):
         # 5 units of ore either side of what was shipped, at mu[Ore] = 2.
-        assert self._result("filling").meta["stock_burden"].loc[
+        assert self._result("filling").stock_burden.loc[
             "Warehouse", "CO2"] == pytest.approx(10.0)
-        assert self._result("draining").meta["stock_burden"].loc[
+        assert self._result("draining").stock_burden.loc[
             "Warehouse", "CO2"] == pytest.approx(-10.0)
 
     def test_no_stock_burden_when_the_two_sides_match(self):
-        assert len(self._result("combined").meta["stock_burden"]) == 0
+        assert len(self._result("combined").stock_burden) == 0
 
     def test_conservation_holds_in_every_period(self):
         for key in self.PERIODS:
@@ -522,19 +521,17 @@ class TestStockAccumulation:
 
 class TestConservationCheck:
     def test_undefined_residual_is_a_failure_not_a_pass(self):
-        empty = pd.DataFrame()
-        result = AllocationResult(
-            empty, empty, empty,
-            {"conservation_residuals": {"CO2": float("nan"), "CH4": 0.0}},
-        )
+        # Only the residuals are needed to check conservation.
+        system = AllocatedSystem.__new__(AllocatedSystem)
+        system.conservation_residuals = {"CO2": float("nan"), "CH4": 0.0}
         with pytest.raises(AssertionError, match="undefined"):
-            result.check_conservation()
+            system.check_conservation()
 
 
-class TestResultMeta:
-    def test_meta_records_rule_and_scope(self):
+class TestSolveRecords:
+    def test_rule_and_scope_are_kept(self):
         model, demand = build_toy_model()
         values = {demand: 12}
-        result = Allocation(model, values, ByValue()).result
-        assert "rule" in result.meta
-        assert "scope" in result.meta
+        result = AllocatedSystem(model, values, ByValue())
+        assert isinstance(result.rule, ByValue)
+        assert result.scope == Scope()

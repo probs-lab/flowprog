@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Contribution analysis**: `AllocatedSystem.contributions()` breaks the
+  burden carried by an object (or a process, or an object from a particular
+  process) into named parts, showing direct and upstream emissions.
+
 - **Market balance checking** (`flowprog.balance`): compiling a model now tracks
   whether each object with `has_market=True` actually balances, and the result is
   available as `model.balance_trace`. A market is reported as *balanced* only if
@@ -30,6 +34,9 @@
   that supply or consume specific objects, with associated elementary exchanges.
 
 ### Changed
+
+- `Allocation` now holds the results directly rather than behind a `.result`
+  attribute, and additional outputs are now available.
 
 - Internal allocation changes to handle processes whose reference flow is an
   input, and with possible stock accumulation. Process intensities are no longer

@@ -251,6 +251,96 @@ class TestEvalUnexpanded:
         assert raw == pytest.approx(10 * 3.0)
 
 
+class TestIntermediateExpansionCache:
+    """`eval()` memoises the expansion of the intermediates, so that many
+    expressions evaluated against the same values share the work. The memo
+    must not leak between different values, or survive a recipe change."""
+
+    def _model(self, out_recipe=1.0):
+        processes = [
+            Process("Dirty", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Clean", produces=["out"], consumes=[], exchanges=["CO2"]),
+            Process("Consumer", produces=["product"], consumes=["out"]),
+        ]
+        objects = [MObject("out", has_market=True), MObject("product")]
+        builder = ModelBuilder(processes, objects, [MExchange("CO2")])
+        demand = sy.Symbol("demand", positive=True)
+        builder.add(
+            builder.pull_production(
+                "product",
+                demand,
+                allocate_backwards={"out": {"Dirty": 2.0 / 3, "Clean": 1.0 / 3}},
+            )
+        )
+        model = builder.build(
+            {
+                "Dirty": {"produces": {"out": out_recipe}, "exchanges": {"CO2": 2.0}},
+                "Clean": {"produces": {"out": out_recipe}, "exchanges": {"CO2": -0.5}},
+                "Consumer": {"produces": {"product": 1.0}, "consumes": {"out": 1.0}},
+            }
+        )
+        assert len(model._intermediates) > 0
+        return model, demand
+
+    def test_repeated_evaluation_is_consistent(self):
+        model, demand = self._model()
+        structural = model.expr("ElementaryFlows", exchange_id="CO2")
+        first = model.eval(structural, {demand: 15})
+        again = model.eval(structural, {demand: 15})
+        assert float(first) == pytest.approx(float(again))
+        assert float(first) == pytest.approx(2.0 * 10 + -0.5 * 5)
+
+    def test_different_values_are_not_served_from_the_cache(self):
+        model, demand = self._model()
+        structural = model.expr("ElementaryFlows", exchange_id="CO2")
+        at_15 = float(model.eval(structural, {demand: 15}))
+        at_30 = float(model.eval(structural, {demand: 30}))
+        # Back to the original, to catch a cache that only ever holds the
+        # first set of values it saw.
+        assert float(model.eval(structural, {demand: 15})) == pytest.approx(at_15)
+        assert at_30 == pytest.approx(2 * at_15)
+
+    def test_unevaluated_values_still_expand(self):
+        # With no values at all the expansion is symbolic, and must still be
+        # distinct from an expansion made with values.
+        model, demand = self._model()
+        structural = model.expr("ElementaryFlows", exchange_id="CO2")
+        symbolic = model.eval(structural)
+        assert demand in symbolic.free_symbols
+        assert float(model.eval(structural, {demand: 15})) == pytest.approx(
+            float(symbolic.subs({demand: 15}))
+        )
+
+    def test_results_follow_a_recipe_change(self):
+        # The memo key includes the recipe, so this misses the cache rather
+        # than needing set_recipe to invalidate it.
+        model, demand = self._model()
+        structural = model.expr("ElementaryFlows", exchange_id="CO2")
+        before = float(model.eval(structural, {demand: 15}))
+
+        # Halving the output per unit activity doubles the activity needed,
+        # and so doubles the emissions.
+        model.set_recipe(
+            {
+                "Dirty": {"produces": {"out": 0.5}, "exchanges": {"CO2": 2.0}},
+                "Clean": {"produces": {"out": 0.5}, "exchanges": {"CO2": -0.5}},
+                "Consumer": {"produces": {"product": 1.0}, "consumes": {"out": 1.0}},
+            }
+        )
+        after = float(model.eval(structural, {demand: 15}))
+        assert after == pytest.approx(2 * before)
+
+    def test_unhashable_values_still_work(self):
+        # Values that cannot be used as a memo key (lists, arrays) must fall
+        # back to expanding each time rather than raising.
+        model, demand = self._model()
+        structural = model.expr("ElementaryFlows", exchange_id="CO2")
+        unhashable = {demand: 15, sy.Symbol("unused"): [1, 2, 3]}
+        assert float(model.eval(structural, unhashable)) == pytest.approx(
+            2.0 * 10 + -0.5 * 5
+        )
+
+
 class TestElementaryBalance:
     def test_returns_indexed_structural_symbol(self):
         processes = [Process("P1", produces=["out"], consumes=[])]

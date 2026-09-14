@@ -3,7 +3,6 @@
 This is the default compiler used by ModelBuilder._compile().
 """
 
-import hashlib
 import logging
 from typing import Container, Optional, Union
 from collections import defaultdict
@@ -12,7 +11,13 @@ import numpy as np
 import pandas as pd
 from rdflib import URIRef
 
-from ..model_structure import ModelStructure, Process, Object, ElementaryExchange
+from ..model_structure import (
+    ModelStructure,
+    Process,
+    Object,
+    ElementaryExchange,
+    flow_id,
+)
 from ..activities import AdditionalActivity, Limit, Floor, create_intermediate
 from ..balance import (
     BalanceEvent,
@@ -435,6 +440,10 @@ class SympyModel:
         self._recipe_by_id: dict[str, dict] = {}
         self._recipe_cache: Optional[dict[sy.Indexed, Union[float, sy.Expr]]] = None
 
+        # Memoised expansion of the intermediates, keyed by the values it was
+        # built for -- see `_expand_intermediates`.
+        self._expansion_cache: Optional[tuple] = None
+
         if recipe_data:
             self.set_recipe(recipe_data)
 
@@ -517,7 +526,8 @@ class SympyModel:
             # ID-based (new format)
             self._set_recipe_from_ids(recipe_data)
 
-        # Invalidate cache
+        # Invalidate cache. `_expansion_cache` needs no explicit invalidation:
+        # it is keyed on the recipe values themselves.
         self._recipe_cache = None
 
     def _set_recipe_from_symbols(self, recipe_data):
@@ -683,6 +693,59 @@ class SympyModel:
             self.balance_trace.signs,
         )
 
+    def _expand_intermediates(self, all_values: dict) -> dict:
+        """Fully expanded definition of every intermediate symbol.
+
+        Each intermediate is expanded exactly once, in definition order, so
+        that by the time a definition is reached its own dependencies have
+        already been expanded. The result is memoised against `all_values`,
+        because callers such as `flowprog.reporting.evaluate_views` evaluate
+        many expressions (e.g. every row of the flow table) against the same
+        values, and every one of them needs the same expansion.
+
+        Expanding the whole set of intermediates takes about as long as
+        expanding it for a single expression, the memoisation is needed.
+
+        :param all_values: Recipe and parameter values, already merged.
+        :return: ``{intermediate symbol: expanded expression}``
+
+        """
+        # The key covers the recipe as well as the parameters, since
+        # `all_values` has them merged -- so a changed recipe misses the memo
+        # without needing `set_recipe` to invalidate it. Values may be
+        # unhashable (lists, arrays), in which case just skip the memo rather
+        # than failing.
+        try:
+            key = tuple(sorted(all_values.items(), key=lambda kv: str(kv[0])))
+            hash(key)
+        except TypeError:
+            key = None
+
+        if key is not None and self._expansion_cache is not None:
+            cached_key, cached_expansion = self._expansion_cache
+            if cached_key == key:
+                return cached_expansion
+
+        expanded: dict = {}
+        for sym, sym_value, _ in self._intermediates:
+            # xreplace, not subs: exact match is enough.
+            value = sym_value
+            if isinstance(value, sy.Expr):
+                value = value.xreplace(all_values)
+            # xreplace returns the raw replacement when the whole expression
+            # matches, so the line above can yield a plain number.
+            if not isinstance(value, sy.Basic):
+                value = sy.sympify(value)
+            # The second xreplace cannot reintroduce a raw value: each entry
+            # of `expanded` was sympified by this same step on an earlier
+            # iteration.
+            expanded[sym] = value.xreplace(expanded)
+
+        if key is not None:
+            self._expansion_cache = (key, expanded)
+
+        return expanded
+
     def eval_intermediates(self, expr: sy.Expr, values=None):
         """Substitute in `values` to intermediate expressions and then flows.
 
@@ -696,18 +759,8 @@ class SympyModel:
         # Merge recipe with provided values
         all_values = {**self.get_recipe_as_symbols(), **values}
 
-        intermediates = [
-            (
-                sym,
-                (
-                    sym_value.xreplace(all_values)
-                    if isinstance(sym_value, sy.Expr)
-                    else sym_value
-                ),
-            )
-            for sym, sym_value, _ in self._intermediates
-        ]
-        return expr.subs(intermediates[::-1])
+        expanded = self._expand_intermediates(all_values)
+        return expr.xreplace(expanded) if isinstance(expr, sy.Basic) else expr
 
     def eval(self, expr: sy.Expr, values=None, expand_intermediates=True):
         """Evaluate an expression against this model's accumulated state and recipe.
@@ -765,6 +818,10 @@ class SympyModel:
         optional hash-based ``id`` column. Recipe data is automatically
         included.
 
+        If only the flow structure and ids are needed -- not the values --
+        call `model.structure.flow_table(flow_ids=True)` directly, which skips
+        resolving and expanding the expressions altogether.
+
         :param values: Additional parameter values to substitute
         :param flow_ids: If True, assign hash-based flow ids to each row
         :return: DataFrame with columns source, target, material, metric, value
@@ -772,10 +829,8 @@ class SympyModel:
         """
         from ..reporting import evaluate_views
 
-        table = evaluate_views(self, self.structure.flow_table(), values)
-        if flow_ids:
-            table["id"] = [_flow_id(r) for r in table.itertuples()]
-        return table
+        table = self.structure.flow_table(flow_ids=bool(flow_ids))
+        return evaluate_views(self, table, values)
 
     def lambdify(self, data=None, expressions: Optional[dict] = None, modules=None):
         """Return function to evaluate model.
@@ -804,7 +859,7 @@ class SympyModel:
         if expressions is None:
             flows = self.structure.flow_table()
             expressions = {
-                _flow_id(r): v for r, v in zip(flows.itertuples(), flows["value"])
+                flow_id(r): v for r, v in zip(flows.itertuples(), flows["value"])
             }
 
         index = list(expressions.keys())
@@ -1188,14 +1243,6 @@ def _compile_floor(contributions, floor, state):
         )
         for symbol, expr in contributions.items()
     }
-
-
-def _flow_id(row):
-    """Hash-based id for a flow row (a namedtuple/Series with source/target/
-    material), stable across evaluations."""
-    return hashlib.md5(
-        (row.source + row.target + row.material).encode()
-    ).hexdigest()
 
 
 def convert_indexed_symbols(data):

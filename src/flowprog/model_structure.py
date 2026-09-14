@@ -5,11 +5,18 @@ ModelStructure: Immutable structure (processes, objects, symbols, lookups)
 from typing import Optional, Container
 from dataclasses import dataclass, field
 from rdflib import URIRef
+import hashlib
 import pandas as pd
 import sympy as sy
 import logging
 
 _log = logging.getLogger(__name__)
+
+
+def flow_id(row) -> str:
+    """Hash-based id for a flow row (a namedtuple/Series with source/target/
+    material), stable across evaluations."""
+    return hashlib.md5((row.source + row.target + row.material).encode()).hexdigest()
 
 
 @dataclass
@@ -222,7 +229,7 @@ class ModelStructure:
             self.processes[j].id for j in self._processes_consuming_object.get(i, [])
         ]
 
-    def flow_table(self) -> pd.DataFrame:
+    def flow_table(self, flow_ids: bool = False) -> pd.DataFrame:
         """Tidy table of technosphere flows, with structural values.
 
         One row per (process, produced object) -- value ``Y[j] * S[i, j]``,
@@ -233,7 +240,9 @@ class ModelStructure:
         recipe data and model state, using e.g. via
         `flowprog.reporting.evaluate_views`.
 
-        :return: DataFrame with columns source, target, material, metric, value
+        :param flow_ids: If True, add a hash-based ``id`` column.
+        :return: DataFrame with columns source, target, material, metric,
+            value (and id, if `flow_ids`)
 
         """
         rows = []
@@ -263,9 +272,12 @@ class ModelStructure:
                         self.X[j] * self.U[i, j],
                     )
                 )
-        return pd.DataFrame(
+        table = pd.DataFrame(
             rows, columns=["source", "target", "material", "metric", "value"]
         )
+        if flow_ids:
+            table["id"] = [flow_id(r) for r in table.itertuples()]
+        return table
 
     def production_flow_table(self) -> pd.DataFrame:
         """Tidy table of technosphere production flows, with structural values.

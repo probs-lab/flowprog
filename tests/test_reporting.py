@@ -326,6 +326,25 @@ class TestStructuralValues:
             EXPECTED_GWP
         )
 
+    def test_flow_ids_are_structural(self):
+        # Flow ids depend only on the structure, so the structural table can
+        # supply them without resolving or expanding any expressions.
+        model, demand = build_model()
+        structural = model.structure.flow_table(flow_ids=True)
+        evaluated = model.to_flows({demand: 100}, flow_ids=True)
+
+        assert list(structural["id"]) == list(evaluated["id"])
+        assert structural["id"].is_unique
+        # ... and are not disturbed by which values were substituted
+        assert list(model.to_flows({demand: 7}, flow_ids=True)["id"]) == list(
+            structural["id"]
+        )
+
+    def test_flow_table_omits_ids_by_default(self):
+        model, demand = build_model()
+        assert "id" not in model.structure.flow_table().columns
+        assert "id" not in model.to_flows({demand: 100}).columns
+
     def test_values_use_structural_symbols(self):
         model, demand = build_model()
         table = Report.elementary_flows(model.structure).table

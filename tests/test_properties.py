@@ -80,6 +80,60 @@ def test_limit_with_symbols(initial, consumption, limit_value):
 # SIMPLE MODEL TESTS (single process: in → out)
 # ============================================================================
 
+class TestLimitScaling:
+    """How a capacity limit scales the step it applies to.
+
+    The branch that scales divides by the difference the step would have made,
+    which is strictly positive there -- the earlier branches take every case
+    where it is not. numpy works out every branch before choosing between them,
+    so that division is evaluated on cases where it is by zero, and the model
+    has to stay evaluable regardless.
+    """
+
+    def _limited_model(self):
+        """Production of `out` pulled twice, the second time under a limit."""
+        builder = ModelBuilder(
+            [Process("P1", consumes=["in"], produces=["out"])],
+            [MObject("in"), MObject("out")],
+        )
+        builder.add(builder.pull_production("out", a))
+        builder.add(
+            builder.limit(builder.pull_production("out", b), builder.Y[0], c)
+        )
+        return builder.build({builder.U[0, 0]: 1.0, builder.S[1, 0]: 1.0})
+
+    @pytest.mark.parametrize("modules", [None, "numpy", ["numpy", "math"], "math"])
+    def test_a_step_that_changes_nothing_is_still_evaluable(self, modules):
+        """With nothing to add, the scaling branch divides by zero -- on a
+        branch that is not selected. Evaluating must not fail over it."""
+        model = self._limited_model()
+        evaluate = model.lambdify(
+            expressions={"output": model.Y[0]}, modules=modules
+        )
+
+        # Already past the limit, so the step is dropped: the first branch.
+        assert evaluate({"a": 1.0, "b": 0.0, "c": 0.5})["output"] == pytest.approx(1.0)
+        # Exactly on the limit, with nothing proposed: the second.
+        assert evaluate({"a": 0.5, "b": 0.0, "c": 0.5})["output"] == pytest.approx(0.5)
+
+    @pytest.mark.parametrize("modules", [None, "numpy", ["numpy", "math"], "math"])
+    def test_a_step_smaller_than_a_rounding_guard_lands_on_the_limit(self, modules):
+        """The scaled step must land on the limit however small the step is.
+
+        Flooring the divisor at a small constant, as a guard against dividing
+        by zero, would scale this step by 5e-3 instead of 0.5.
+        """
+        model = self._limited_model()
+        evaluate = model.lambdify(
+            expressions={"output": model.Y[0]}, modules=modules
+        )
+        result = evaluate({"a": 0.0, "b": 1e-12, "c": 5e-13})
+
+        # abs=0: these are far below the absolute tolerance approx() would
+        # otherwise allow, which is the whole point of the case.
+        assert result["output"] == pytest.approx(5e-13, rel=1e-9, abs=0.0)
+
+
 class TestSimpleModel:
     """Tests using simple single-process model (in → out)."""
 
@@ -295,6 +349,10 @@ class TestBranchingModel:
         st.floats(min_value=0, allow_infinity=False)
     )
     @example(2, 3, 10)
+    # A case where the limit binds and the scaled step lands exactly on the
+    # limit in exact arithmetic, so the total comes out one ulp above it (8.0
+    # at this magnitude). See the tolerance note below.
+    @example(1.3575474285203644e16, 5.811743731991475e16, 4.9604271304167624e16)
     def test_limit_involving_unrelated_process(self, initial_demand, extra_demand, capacity):
         """Test limit() where limit expression involves a process not directly in the limited flow.
         Uses P2 for initial demand and P3 for extra demand, with limit on combined output.
@@ -330,7 +388,15 @@ class TestBranchingModel:
         value1 = float(m.eval(m.Y[1]).subs(data))
         value2 = float(m.eval(m.Y[2]).subs(data))
         assert value1 == pytest.approx(initial_demand), "initial demand satisfied exactly"
-        assert value1 + value2 <= max(initial_demand, capacity) + 1e-10, "limit applied"
+
+        # Scaling the step down lands on whichever bound wins exactly in exact
+        # arithmetic, but only to within a rounding error of it in floating
+        # point -- and these values are unbounded above, so an absolute
+        # tolerance says nothing: one ulp at 5e16 is already 8. The relative
+        # part leaves room for that, while staying far tighter than any real
+        # failure to apply the limit.
+        bound = max(initial_demand, capacity)
+        assert value1 + value2 <= bound + max(1e-10, 1e-12 * bound), "limit applied"
         if initial_demand + extra_demand < capacity:
             assert value2 == pytest.approx(extra_demand)
 

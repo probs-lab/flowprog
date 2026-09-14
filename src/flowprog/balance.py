@@ -32,6 +32,14 @@ and a :class:`Sign` for it. The sign is what makes a proof possible, since
 object production/consumption deficits are normally discontinuous at zero, but
 if the sign of the balance is known then this can be simplified.
 
+Where a balance is a sum of terms that all share a sign, the sign of the balance
+is known to be the same as the sign of the terms. Where the terms differ in
+sign, intermediate symbols are substituted and branching functions are expanded,
+which allows for cancellation and more steps to be identified as closing
+balances. For example, a balance of the form ``B + Max(0, -B)`` can be concluded
+to be closed in this way. Splitting multiplies out the branches, so we give up
+for large expressions (:data:`MAX_CASES`).
+
 If a market does not balance, its *residual* is reported by
 :meth:`BalanceTrace.explain <flowprog.BalanceTrace.explain>`.
 
@@ -39,6 +47,7 @@ If a market does not balance, its *residual* is reported by
 
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import combinations
 from enum import Enum
 from typing import Optional
@@ -119,9 +128,26 @@ class Sign(Enum):
         return self
 
 
+# How many cases a sum may split into before working through them stops being
+# worth it. Splitting multiplies out the branches of every Max, Min and
+# Piecewise in the sum, so without a bound this grows geometrically with the
+# number of transformations a model applies to the same object.
+MAX_CASES = 8
+
+
+# Signs that allow an expression to be at least/at most zero, used when a
+# branch condition bounds an expression from one side.
+_AT_LEAST_ZERO = (Sign.NON_NEGATIVE, Sign.ZERO)
+_AT_MOST_ZERO = (Sign.NON_POSITIVE, Sign.ZERO)
+
+
 # Depth limit when following chains of intermediate symbol definitions, so an
 # unexpected cycle cannot hang the caller.
 _MAX_DEPTH = 100
+
+# How many intermediate symbols may be substituted out of an expression before
+# giving up on writing it out.
+_MAX_SUBSTITUTIONS = 200
 
 # How large an expression may get, in tree nodes, before it is not worth
 # analysing further. Writing out the values a balance is built from is what
@@ -210,7 +236,18 @@ def _structural_sign(expr, definitions, cache, depth):
         return sign(definitions[expr]) if expr in definitions else Sign.UNKNOWN
 
     if isinstance(expr, sy.Add):
-        return _common_sign({sign(a) for a in expr.args})
+        result = _common_sign({sign(a) for a in expr.args})
+        if result is Sign.UNKNOWN and depth == 0:
+            # Adding up the signs of the terms is not enough for a sum written
+            # so that the terms cancel: a step supplying exactly an object's
+            # production deficit leaves `B + Max(0, -B)`, whose terms conflict
+            # but whose value is `Max(B, 0)`, non-negative whatever B is.
+            # Splitting into cases makes that visible.
+            #
+            # Only done for the expression asked about, not for every sum
+            # nested inside it.
+            result = _sign_by_cases(expr, definitions, cache, depth)
+        return result
 
     if isinstance(expr, sy.Mul):
         result = Sign.NON_NEGATIVE
@@ -246,9 +283,174 @@ def _structural_sign(expr, definitions, cache, depth):
         return Sign.UNKNOWN
 
     if isinstance(expr, sy.Piecewise):
-        return _common_sign({sign(value) for value, _ in expr.args})
+        return _sign_of_piecewise(expr, definitions, cache, depth)
 
     return Sign.UNKNOWN
+
+
+def _sign_by_cases(expr, definitions, cache, depth):
+    """The sign of a sum whose terms do not share one, taken case by case.
+
+    Rewriting the `Max`/`Min` in the sum as a `Piecewise` and folding it out
+    gives one case per combination of branches, in each of which the sum is an
+    ordinary expression -- and often one whose terms now cancel.
+
+    The intermediate symbols the sum is written in are written out first, since
+    a balance contains terms from different steps that use different
+    intermediate expressions.
+
+    Splitting multiplies out the branches of everything in the sum, so this is
+    only attempted where there are few enough of them to be worth it. Returns
+    :attr:`Sign.UNKNOWN` otherwise, and for a sum with no branches to split on.
+
+    """
+    if depth > _MAX_DEPTH or too_large(expr):
+        return Sign.UNKNOWN
+    cases = _count_cases(expr)
+    if cases == 0 or cases > MAX_CASES:
+        return Sign.UNKNOWN
+    # Terms cancel only once they are in the same terms, and a balance and the
+    # steps that built it are written in different intermediate symbols.
+    expr = _written_out(expr, definitions)
+    if expr is None:
+        return Sign.UNKNOWN
+    try:
+        split = sy.piecewise_fold(expr.rewrite(sy.Piecewise))
+    except (AttributeError, TypeError, ValueError, NotImplementedError):
+        # Rewriting is a convenience here, no need to give up.
+        return Sign.UNKNOWN
+    if not isinstance(split, sy.Piecewise) or too_large(split):
+        return Sign.UNKNOWN
+    return _sign_of_piecewise(split, definitions, cache, depth)
+
+
+def _written_out(expr, definitions):
+    """`expr` with the intermediate symbols it is written in substituted out.
+
+    A step's contribution is accumulated as the symbols standing for what a
+    transformation worked out -- its bound, its proposed value -- while the
+    balance it is added to is in terms of the model's own recipe and
+    parameters. Neither cancels against the other until both say the same
+    thing, which is what writing the definitions out does.
+
+    Only definitions that are plain algebra are written out; one that branches
+    is left as the symbol it is. Putting a branch inside a branch is what
+    naming these subexpressions avoided in the first place -- sympy rebuilds
+    any `Piecewise` a substitution touches, rewriting its condition as an
+    `ITE`, which on a condition carrying another `Piecewise` does not finish in
+    reasonable time. What this is looking for is algebraic cancellation anyway.
+
+    Substitutions are made one symbol at a time, so that an expression on its
+    way to being too large is noticed while it is still small, rather than
+    after a whole round has multiplied it out. Returns None where it grows too
+    large to be worth analysing regardless.
+    """
+    for _ in range(_MAX_SUBSTITUTIONS):
+        symbols = [
+            symbol
+            for symbol in expr.free_symbols
+            if symbol in definitions and not _has_branches(definitions[symbol])
+        ]
+        if not symbols:
+            return expr
+        # Taken in a fixed order, so that substitutions cut short for size are
+        # cut short at the same point every time.
+        symbol = min(symbols, key=str)
+        expr = sy.S(expr.xreplace({symbol: definitions[symbol]}))
+        if too_large(expr):
+            return None
+    return None
+
+
+@lru_cache(maxsize=4096)
+def _has_branches(expr):
+    """Whether `expr` chooses between values, rather than being one.
+
+    Memoised: the same handful of definitions are asked about once per round of
+    substitutions, on every step of a build, and scanning one is not free.
+    """
+    return isinstance(expr, sy.Basic) and bool(
+        expr.atoms(sy.Max, sy.Min, sy.Piecewise)
+    )
+
+
+def _count_cases(expr):
+    """How many cases splitting `expr` on its branches would come to.
+
+    Zero where there is nothing to split on, so that a caller can tell that
+    apart from a split not worth making.
+    """
+    branches = expr.atoms(sy.Max, sy.Min, sy.Piecewise)
+    if not branches:
+        return 0
+    cases = 1
+    for branch in branches:
+        cases *= len(branch.args)
+        if cases > MAX_CASES:
+            break
+    return cases
+
+
+def _sign_of_piecewise(expr, definitions, cache, depth):
+    """The sign shared by every case of a `Piecewise`.
+
+    The values alone settle it most of the time. Where they do not, each case
+    is taken again under what is known where it applies: its own condition, and
+    the failure of the conditions before it. That second pass is left until it
+    is needed, and only made for the expression asked about, since combining
+    conditions is expensive when they are large.
+    """
+    values = {sign_of(value, definitions, cache, depth + 1) for value, _ in expr.args}
+    sign = _common_sign(values)
+    if sign is not Sign.UNKNOWN or depth != 0 or too_large(expr):
+        return sign
+
+    signs, earlier_failed = set(), sy.true
+    for value, condition in expr.args:
+        known = sy.And(earlier_failed, condition)
+        signs.add(_sign_given(value, known, definitions, cache, depth))
+        if Sign.UNKNOWN in signs:
+            return Sign.UNKNOWN
+        earlier_failed = sy.And(earlier_failed, sy.Not(condition))
+    return _common_sign(signs)
+
+
+def _sign_given(value, known, definitions, cache, depth):
+    """The sign of `value` where `known` holds.
+
+    The shape of the expression comes first; the condition is consulted only
+    where that leaves the sign undetermined. A condition bounds `value` when
+    the difference between the two has a sign of its own -- which covers the
+    case that matters, of a branch whose condition is exactly the claim that
+    its value is one side of zero.
+    """
+    sign = sign_of(value, definitions, cache, depth + 1)
+    if sign is not Sign.UNKNOWN:
+        return sign
+    for bound in _known_non_negative(known):
+        # `value` is `bound` plus what is left over, and `bound` is at least
+        # zero here, so a non-negative remainder settles it; the same the other
+        # way about for `-bound`.
+        if sign_of(value - bound, definitions, cache, depth + 1) in _AT_LEAST_ZERO:
+            return Sign.NON_NEGATIVE
+        if sign_of(value + bound, definitions, cache, depth + 1) in _AT_MOST_ZERO:
+            return Sign.NON_POSITIVE
+    return Sign.UNKNOWN
+
+
+def _known_non_negative(known):
+    """Quantities a condition says are at least zero.
+
+    Only the top-level conjuncts are used: those hold wherever the condition
+    does. Anything else in it (an `Or`, say) is passed over rather than
+    guessed at.
+    """
+    parts = known.args if isinstance(known, sy.And) else (known,)
+    for part in parts:
+        if isinstance(part, (sy.Ge, sy.Gt)):
+            yield part.lhs - part.rhs
+        elif isinstance(part, (sy.Le, sy.Lt)):
+            yield part.rhs - part.lhs
 
 
 def _common_sign(signs):
@@ -307,7 +509,6 @@ class BalanceTrace:
         events=None,
         incomplete=(),
         definitions=None,
-        numerical_guards=(),
     ):
         """
         :param structure: The model structure these balances belong to.
@@ -320,10 +521,6 @@ class BalanceTrace:
             outstanding there.
         :param definitions: What each intermediate symbol appearing in the
             balances stands for, needed to follow them in :meth:`breakpoints`.
-        :param numerical_guards: Values a compiler introduces for numerical
-            safety, such as a small number keeping a division finite. They look
-            like bounds but do not mark a change in what the model does, so
-            :meth:`breakpoints` leaves them out.
         """
         self.structure = structure
         self.balances = dict(balances)
@@ -331,7 +528,6 @@ class BalanceTrace:
         self.events = {i: tuple(e) for i, e in (events or {}).items()}
         self.incomplete = set(incomplete)
         self._definitions = definitions or {}
-        self._numerical_guards = tuple(numerical_guards)
         self._index = {obj.id: i for i, obj in enumerate(structure.objects)}
         self._verdicts: dict[str, tuple[Verdict, str]] = {}
 
@@ -409,8 +605,6 @@ class BalanceTrace:
         for a market that balances unconditionally, and for one that never
         balances.
 
-        Values passed as `numerical_guards` are skipped as breakpoints.
-
         Enumerating breakpoints for an expression is relatively slow, so they
         are calculated here on demand rather than during compilation.
 
@@ -452,8 +646,7 @@ class BalanceTrace:
         return out
 
     @classmethod
-    def from_dict(cls, data, structure, definitions=None, numerical_guards=(),
-                  sympify=sy.sympify):
+    def from_dict(cls, data, structure, definitions=None, sympify=sy.sympify):
         """Rebuild a trace from :meth:`to_dict` output.
 
         :param sympify: How to turn a saved expression back into sympy, if the
@@ -481,15 +674,7 @@ class BalanceTrace:
                     )
                     for event in entry["events"]
                 )
-        return cls(
-            structure,
-            balances,
-            signs,
-            events,
-            incomplete,
-            definitions,
-            numerical_guards,
-        )
+        return cls(structure, balances, signs, events, incomplete, definitions)
 
     # -- internals --
 
@@ -559,14 +744,11 @@ class BalanceTrace:
                 continue
             if isinstance(expr, (sy.Max, sy.Min)):
                 # Whichever argument wins decides what the model does, so each
-                # pair of them is a boundary -- unless one is a guard the
-                # compiler added for numerical safety, which looks like a bound
-                # but is not one.
-                if not any(guard in expr.args for guard in self._numerical_guards):
-                    for a, b in combinations(expr.args, 2):
-                        yield sy.Ge(a, b, evaluate=False)
-                        if first_only:
-                            return
+                # pair of them is a boundary.
+                for a, b in combinations(expr.args, 2):
+                    yield sy.Ge(a, b, evaluate=False)
+                    if first_only:
+                        return
             stack.extend(expr.args)
 
     def _has_condition(self, object_id):

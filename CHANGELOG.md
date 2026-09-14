@@ -35,6 +35,9 @@
 
 ### Changed
 
+- Internal changes to avoid divide-by-zero errors in limit expressions could
+  give very slight numerical changes in results.
+
 - Changed default value for `lambdify()` `modules` parameter to "math"; this is
   much faster and works better than the previous default "numpy", but does not
   support vectorised evaluation across arrays. Pass `modules="numpy"` to get the

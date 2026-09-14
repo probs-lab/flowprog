@@ -42,12 +42,6 @@ _COMPILER_INTERMEDIATE_PREFIX = "_t"
 _TRIVIAL_TYPES = (sy.Symbol, sy.Number, sy.Indexed)
 
 
-# Guard against dividing by zero when a capacity limit works out how far to
-# scale a step down. Small enough not to affect the answer where the division
-# is meaningful, and only reached where it is not.
-_LIMIT_EPSILON = sy.S(10) ** -10
-
-
 def _object_balance(structure, i, contributions):
     """Production minus consumption of object `i` from a set of activities."""
     produced = sum(
@@ -206,7 +200,6 @@ class SympyCompiler:
             events=self.events,
             incomplete=self.incomplete,
             definitions=self._definitions,
-            numerical_guards=(_LIMIT_EPSILON,),
         )
 
     def add_step(self, index, step):
@@ -330,6 +323,12 @@ class SympyCompiler:
         else:
             effect = Effect.OPENS
             new_sign = combine_signs(sign, self._sign(written_out))
+            if new_sign is Sign.UNKNOWN:
+                # Try forming the new balance sum first, and see if that can be
+                # determined to cancel to zero.
+                new_sign = self._sign(outstanding + written_out)
+                if new_sign is Sign.ZERO:
+                    effect = Effect.CLOSES
 
         self.events[i].append(
             BalanceEvent(index, effect, step.description, sign, new_sign)
@@ -432,7 +431,6 @@ class SympyModel:
                     for i in range(len(structure.objects))
                 },
                 definitions={sym: expr for sym, expr, _ in intermediates},
-                numerical_guards=(_LIMIT_EPSILON,),
             )
         self.balance_trace = balance_trace
 
@@ -882,6 +880,12 @@ class SympyModel:
         # Create a friendlier wrapper
         str_args = func.__code__.co_varnames[: func.__code__.co_argcount]
 
+        # numpy evaluates every branch of a `Piecewise` before choosing between
+        # them, which can lead to harmless divide-by-zero on inactive branches.
+        # If we are using numpy (or another backend with similar behaviour),
+        # convert to numpy floats and suppress divide-by-zero warnings below.
+        guard_unselected_branches = _evaluates_every_branch(modules)
+
         def wrapper(data):
             converted_data = convert_indexed_symbols(data)
             relevant_data = {
@@ -890,7 +894,14 @@ class SympyModel:
             missing_params = set(str_args) - set(relevant_data)
             if missing_params:
                 raise ValueError(f"Missing parameters: {missing_params}")
-            values = func(**relevant_data)
+            if guard_unselected_branches:
+                relevant_data = {
+                    k: _as_float(v) for k, v in relevant_data.items()
+                }
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    values = func(**relevant_data)
+            else:
+                values = func(**relevant_data)
             # Convert to float if it's a 0-dimensional array
             values = [
                 float(x) if isinstance(x, np.ndarray) and x.ndim == 0 else x
@@ -1144,7 +1155,6 @@ class SympyModel:
                 saved_balances,
                 structure,
                 definitions={sym: expr for sym, expr, _ in intermediates},
-                numerical_guards=(_LIMIT_EPSILON,),
                 sympify=lambda expr: sy.sympify(expr, locals=namespace),
             )
             if saved_balances
@@ -1199,18 +1209,17 @@ def _compile_limit(contributions, limit, state):
         f"limit: proposed value of {limit.expression}",
     )
 
-    # `proposed` and `current` name the same subexpressions the inlined form
-    # would have evaluated, so this subtracts the same two floats as before,
-    # but keeps `safe_difference` a constant size -- which matters because
-    # sy.Max() runs an `equals()` comparison over its arguments that is very
-    # slow on anything Piecewise-laden.
-    safe_difference = sy.Max(proposed - current, _LIMIT_EPSILON)
-
+    # The last branch is reached only when the first two were not, which is to
+    # say `proposed > bound > current`: the difference it divides by is
+    # strictly positive there, so the division is safe wherever it is used.
+    # It can be zero on the other branches, where the value is discarded --
+    # which matters only for evaluators that work out every branch before
+    # choosing between them; see :meth:`SympyModel.lambdify`.
     return {
         symbol: sy.Piecewise(
             (sy.S.Zero, current >= bound),
             (expr, proposed <= bound),
-            ((bound - current) / safe_difference * expr, True),
+            ((bound - current) / (proposed - current) * expr, True),
             evaluate=False,
         )
         for symbol, expr in contributions.items()
@@ -1246,6 +1255,44 @@ def _compile_floor(contributions, floor, state):
         )
         for symbol, expr in contributions.items()
     }
+
+
+# `lambdify` backends that work a `Piecewise` branch out only when it is the
+# one selected, so a branch the model never uses cannot fail. Everything else
+# is taken to work out every branch: numpy prints a `Piecewise` as
+# `numpy.select`, which does, and so do the backends built on its printer.
+_LAZY_MODULES = frozenset({"math", "mpmath", "sympy"})
+
+
+def _evaluates_every_branch(modules):
+    """Whether this `lambdify` backend works out branches it will not select.
+
+    `modules` is what the caller passed to :meth:`SympyModel.lambdify`, so it
+    may be a name, a list of them, a namespace to print against, or None for
+    the default (numpy). Anything not known to be lazy is taken to be eager:
+    the handling that follows from this costs little, and going without it
+    where it is needed costs a ZeroDivisionError on a branch nothing uses.
+    """
+    if not modules:
+        return True
+    if not isinstance(modules, (list, tuple, set, frozenset)):
+        modules = [modules]
+    return not all(
+        isinstance(module, str) and module.lower() in _LAZY_MODULES
+        for module in modules
+    )
+
+
+def _as_float(value):
+    """`value` as floating point, so that dividing by zero gives `nan`.
+
+    Left alone if it is not something numeric: a parameter that cannot be a
+    number is for `lambdify` to complain about, not for this.
+    """
+    try:
+        return np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        return value
 
 
 def convert_indexed_symbols(data):

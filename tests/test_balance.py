@@ -18,6 +18,11 @@ def MObject(id, *args, **kwargs):
 
 D = sy.Symbol("D", positive=True)
 
+# Deliberately without a sign assumption, to pin down what can be proved about
+# a model whose parameters say nothing about themselves.
+F = sy.Symbol("F")
+G = sy.Symbol("G")
+
 
 def chain_builder():
     """in -> P1 -> mid (market) -> P2 -> out"""
@@ -67,6 +72,118 @@ def merit_order_builder(with_backstop, capacities=("C1", "C2")):
     return builder
 
 
+def recyclate_builder(close_surplus):
+    """Demand for a product, met from recycled material and topped up by
+    mining, with the recyclate arriving in whatever quantity it arrives in.
+
+    Either side can be the larger: too little recyclate and the mine makes up
+    the difference, too much and there is material spare. `close_surplus` adds
+    the step that puts the surplus to use.
+    """
+    builder = ModelBuilder(
+        [
+            Process("Make", consumes=["Material", "Energy"], produces=["Product"]),
+            Process("Recycle", consumes=["Scrap"], produces=["Material"]),
+            Process("Mine", consumes=["Ore"], produces=["Material"]),
+        ],
+        [
+            MObject("Product"),
+            MObject("Material", has_market=True),
+            MObject("Energy"),
+            MObject("Scrap"),
+            MObject("Ore"),
+        ],
+    )
+    builder.add(
+        builder.pull_production("Product", F, until_objects=["Material"]),
+        label="demand",
+    )
+    builder.add(
+        builder.push_consumption("Scrap", G, until_objects=["Material"]),
+        label="recyclate",
+    )
+    builder.add(
+        builder.pull_production(
+            "Material",
+            builder.object_production_deficit("Material"),
+            allocate_backwards={"Material": {"Mine": 1}},
+        ),
+        label="mine the rest",
+    )
+    if close_surplus:
+        builder.add(
+            builder.push_consumption(
+                "Material", builder.object_consumption_deficit("Material")
+            ),
+            label="use up the surplus",
+        )
+    return builder
+
+
+def capped_recyclate_builder(demand=D):
+    """As :func:`recyclate_builder`, but instead of using up a surplus
+    afterwards, no more recyclate is taken than there is demand for.
+
+    The cap is what makes this balance: it holds recycled production to the
+    consumption of the same object, so the market can only ever be short, and
+    the mine then makes up exactly that.
+    """
+    builder = ModelBuilder(
+        [
+            Process("Make", consumes=["Material", "Energy"], produces=["Product"]),
+            Process("Recycle", consumes=["Scrap"], produces=["Material"]),
+            Process("Mine", consumes=["Ore"], produces=["Material"]),
+        ],
+        [
+            MObject("Product"),
+            MObject("Material", has_market=True),
+            MObject("Energy"),
+            MObject("Scrap"),
+            MObject("Ore"),
+        ],
+    )
+    builder.add(
+        builder.pull_production("Product", demand, until_objects=["Material"]),
+        label="demand",
+    )
+    builder.add(
+        builder.limit(
+            builder.push_consumption("Scrap", G, until_objects=["Material"]),
+            builder.expr("ProcessOutput", process_id="Recycle", object_id="Material"),
+            builder.expr("Consumption", object_id="Material"),
+        ),
+        label="recyclate, capped at demand",
+    )
+    builder.add(
+        builder.pull_production(
+            "Material",
+            builder.object_production_deficit("Material"),
+            allocate_backwards={"Material": {"Mine": 1}},
+        ),
+        label="mine the rest",
+    )
+    return builder
+
+
+RECYCLATE_RECIPE = {
+    (0, 0): 1.0,  # Make produces Product
+    (1, 0): 0.8,  # Make consumes Material
+    (2, 0): 0.2,  # Make consumes Energy
+    (1, 1): 1.0,  # Recycle produces Material
+    (3, 1): 1.0,  # Recycle consumes Scrap
+    (1, 2): 1.0,  # Mine produces Material
+    (4, 2): 1.0,  # Mine consumes Ore
+}
+
+
+def recyclate_recipe(builder):
+    produces = {(0, 0), (1, 1), (1, 2)}
+    return {
+        (builder.S if key in produces else builder.U)[key]: value
+        for key, value in RECYCLATE_RECIPE.items()
+    }
+
+
 class TestSignOf:
     def test_recipe_and_activity_symbols_are_non_negative(self):
         structure = chain_builder().structure
@@ -77,6 +194,29 @@ class TestSignOf:
     def test_sums_of_mixed_sign_are_unknown(self):
         structure = chain_builder().structure
         assert sign_of(structure.Y[0] - structure.Y[1]) is Sign.UNKNOWN
+
+    def test_a_sum_whose_terms_cancel_case_by_case(self):
+        """`B + Max(0, -B)` is `Max(B, 0)`, and `B - Max(0, B)` is `Min(B, 0)`.
+        The terms conflict in sign, but on either side of the branch they
+        cancel. This is the shape a step closing a deficit leaves behind."""
+        b = sy.Symbol("b")
+        assert sign_of(b + sy.Max(0, -b, evaluate=False)) is Sign.NON_NEGATIVE
+        assert sign_of(b - sy.Max(0, b, evaluate=False)) is Sign.NON_POSITIVE
+
+    def test_a_sum_that_cancels_once_its_symbols_are_written_out(self):
+        """A balance and the step added to it are written in different symbols,
+        and neither cancels against the other until both say the same thing."""
+        b, step = sy.symbols("b step")
+        expr = b + sy.Max(0, -step, evaluate=False)
+
+        assert sign_of(expr) is Sign.UNKNOWN
+        assert sign_of(expr, {step: b}) is Sign.NON_NEGATIVE
+
+    def test_a_sum_that_really_can_go_either_way_is_still_unknown(self):
+        """Splitting into cases must not turn a conflict into an answer where
+        the terms are of different quantities."""
+        b, c = sy.symbols("b c")
+        assert sign_of(b + sy.Max(0, -c, evaluate=False)) is Sign.UNKNOWN
 
     def test_zero(self):
         assert sign_of(sy.S.Zero) is Sign.ZERO
@@ -126,6 +266,33 @@ class TestProvedBalanced:
             Effect.OPENS,
             Effect.CLOSES_UNLESS_CONSTRAINED,
             Effect.CLOSES_UNLESS_CONSTRAINED,
+            Effect.CLOSES,
+        ]
+
+    def test_deficits_taken_in_both_directions_close_a_market(self):
+        """A step making up what is missing leaves a market that can only be
+        over-supplied, whatever was known about it before; a step using up the
+        surplus then closes it whichever way round demand and supply fall."""
+        trace = recyclate_builder(close_surplus=True).build().balance_trace
+
+        assert trace.verdict("Material")[0] is Verdict.BALANCED
+        assert [e.effect for e in trace.events_for("Material")] == [
+            Effect.OPENS,
+            Effect.OPENS,
+            Effect.OPENS,
+            Effect.CLOSES,
+        ]
+
+    def test_a_limit_holding_supply_to_demand_closes_a_market(self):
+        """Capping recycled production at the consumption of the same object
+        leaves a market that can only be short, so the step that mines what is
+        missing closes it exactly."""
+        trace = capped_recyclate_builder().build().balance_trace
+
+        assert trace.verdict("Material")[0] is Verdict.BALANCED
+        assert [e.effect for e in trace.events_for("Material")] == [
+            Effect.OPENS,
+            Effect.OPENS,
             Effect.CLOSES,
         ]
 
@@ -208,6 +375,26 @@ class TestConditional:
 
         assert trace.verdict("Elec")[0] is Verdict.CONDITIONAL
         assert trace.breakpoints("Elec")
+
+    def test_supply_that_may_exceed_demand_goes_unabsorbed(self):
+        """Without the step that uses up the surplus, this market is out of
+        balance in one direction only: production is topped up so there is
+        never a shortage, but spare recyclate has nowhere to go."""
+        trace = recyclate_builder(close_surplus=False).build().balance_trace
+        verdict, reason = trace.verdict("Material")
+
+        assert verdict is Verdict.CONDITIONAL
+        assert "supply can go unabsorbed" in reason
+        assert trace.sign("Material") is Sign.NON_NEGATIVE
+
+    def test_a_limit_holding_supply_to_demand_needs_demand_to_have_a_sign(self):
+        """The same model with a demand that says nothing about itself is not
+        proved, and rightly: a negative demand makes the cap bind the wrong way
+        round, leaving material produced that nothing consumes."""
+        trace = capped_recyclate_builder(demand=F).build().balance_trace
+
+        assert trace.verdict("Material")[0] is Verdict.CONDITIONAL
+        assert trace.breakpoints("Material")
 
     def test_a_deficit_split_by_share_parameters_is_not_proved(self):
         """Splitting what is missing between routes closes the market only if
@@ -389,6 +576,52 @@ class TestAgreesWithTheNumbers:
             modules="math",
         )
         result = evaluate({"D": demand, "C1": capacity_1, "C2": capacity_2})
+        scale = max(result["production"], 1.0)
+        assert abs(result["balance"]) < 1e-9 * scale
+
+    @given(
+        st.floats(min_value=0, max_value=1e6),
+        st.floats(min_value=0, max_value=1e6),
+    )
+    @settings(deadline=None, max_examples=50)
+    def test_market_closed_from_both_sides_balances_at_any_parameter_values(
+        self, demand, recyclate
+    ):
+        builder = recyclate_builder(close_surplus=True)
+        model = builder.build(recyclate_recipe(builder))
+        assert model.balance_trace.verdict("Material")[0] is Verdict.BALANCED
+
+        evaluate = model.lambdify(
+            expressions={
+                "balance": builder.object_balance("Material"),
+                "production": builder.expr("SoldProduction", object_id="Material"),
+            },
+            modules="math",
+        )
+        result = evaluate({"F": demand, "G": recyclate})
+        scale = max(result["production"], 1.0)
+        assert abs(result["balance"]) < 1e-9 * scale
+
+    @given(
+        st.floats(min_value=0, max_value=1e6),
+        st.floats(min_value=0, max_value=1e6),
+    )
+    @settings(deadline=None, max_examples=50)
+    def test_market_closed_by_a_limit_balances_at_any_parameter_values(
+        self, demand, recyclate
+    ):
+        builder = capped_recyclate_builder()
+        model = builder.build(recyclate_recipe(builder))
+        assert model.balance_trace.verdict("Material")[0] is Verdict.BALANCED
+
+        evaluate = model.lambdify(
+            expressions={
+                "balance": builder.object_balance("Material"),
+                "production": builder.expr("SoldProduction", object_id="Material"),
+            },
+            modules="math",
+        )
+        result = evaluate({"D": demand, "G": recyclate})
         scale = max(result["production"], 1.0)
         assert abs(result["balance"]) < 1e-9 * scale
 

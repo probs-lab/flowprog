@@ -511,8 +511,7 @@ def lambdify_views(model, views, modules=None):
     :param model: The evaluable model that resolves the views' structural
         symbols and provides ``lambdify()`` (e.g. SympyModel).
     :param views: Expression, Series, or a dict of these.
-    :param modules: Passed to ``model.lambdify()`` (use ``"math"`` for large
-        models with nested Piecewise expressions).
+    :param modules: Passed to ``model.lambdify()``.
     :return: Function ``values -> results`` mirroring the shape of `views`.
     """
     single = not isinstance(views, Mapping)

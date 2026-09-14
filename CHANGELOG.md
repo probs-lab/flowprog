@@ -35,6 +35,11 @@
 
 ### Changed
 
+- Changed default value for `lambdify()` `modules` parameter to "math"; this is
+  much faster and works better than the previous default "numpy", but does not
+  support vectorised evaluation across arrays. Pass `modules="numpy"` to get the
+  previous default behaviour.
+
 - `Allocation` now holds the results directly rather than behind a `.result`
   attribute, and additional outputs are now available.
 

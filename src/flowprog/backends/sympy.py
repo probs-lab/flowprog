@@ -844,11 +844,14 @@ class SympyModel:
             scalar-only evaluation: avoids numpy array overhead and correctly
             handles nested ``Piecewise`` / ``ITE`` nodes that numpy's code
             generator can miscompile for scalar inputs.  Default ``None``
-            uses numpy (suitable for vectorised / array evaluation).
+            uses math.
         :return: Callable function that takes parameter dict and returns results
         """
         if data is None:
             data = {}
+
+        if modules is None:
+            modules = "math"
 
         # Merge recipe with additional data for early substitution
         all_data = {**self.get_recipe_as_symbols(), **data}

@@ -1,6 +1,6 @@
 [project]
 name = "flowprog"
-version = "0.1.0"
+version = "1.0.0"
 description = "Define material flows models as programs"
 readme = "README.md"
 license = "MIT"
@@ -8,11 +8,28 @@ requires-python = ">=3.10"
 authors = [
     {name = "Rick Lupton", email = "mail@ricklupton.name"},
 ]
+keywords = ["material flow analysis", "mfa", "lca", "sympy"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "sympy>=1.11.1",
     "pandas>=2.2.0",
     "rdflib>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/probs-lab/flowprog"
+Repository = "https://github.com/probs-lab/flowprog"
+Issues = "https://github.com/probs-lab/flowprog/issues"
+Changelog = "https://github.com/probs-lab/flowprog/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 numpyro = [
@@ -28,13 +45,8 @@ benchmarks = [
 # For flowprog.io.system_definitions: parsing system definitions without a Sphinx
 # build. The `loader` extra is what pulls in myst-parser and markdown-it-py.
 definitions = [
-    "sphinx-probs-rdf[loader]>=0.5.1",
+    "sphinx-probs-rdf[loader]>=0.6.0",
 ]
-
-# The loader is not in a released sphinx_probs_rdf yet -- until 0.5.1 is on PyPI, get
-# it from git. Only affects how this project resolves it, not what it declares above.
-[tool.uv.sources]
-sphinx-probs-rdf = { git = "https://github.com/ricklupton/sphinx_probs_rdf", branch = "master" }
 
 [dependency-groups]
 dev = [

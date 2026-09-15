@@ -7,7 +7,7 @@ This project helps with building Material Flow (MFA) models by defining equation
 
 ## Getting started
 
-Install `flowprog` -- it is not yet released on PyPI so this needs to be done locally or via git.
+Install `flowprog` from PyPI, e.g. `pip install flowprog` or `uv add flowprog`.
 
 See the [examples](examples/energy/index) to get an idea of how flowprog can be used.
 

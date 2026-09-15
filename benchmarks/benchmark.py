@@ -14,6 +14,14 @@ Two model shapes:
   chain  : linear chain P0→O0←P1→O1←…←P(N-1)→O(N-1)
   fan    : one root process consuming N leaf processes in parallel
 
+`chain` builds via pull_production()/pull_process_output() recursing once
+per link, so it hits Python's default recursion limit (RecursionError, not
+a graceful slowdown) around N=495 -- well before compile/lambdify time
+would otherwise become a concern. `fan` has no such chain of recursive
+calls and scales linearly past N=2000. A RecursionError (or any other
+non-timeout exception) is printed inline rather than silently treated as a
+timeout.
+
 Flowprog phases timed separately:
   build    : ModelBuilder() + pull_production() + add()
   compile  : builder.build(recipe)  →  SympyModel
@@ -23,12 +31,19 @@ Flowprog phases timed separately:
 Comparison (scipy):  matrix_build | matrix_solve
 Comparison (brightway, if installed):  bw_db_setup | bw_lci_solve
 
+Before timing, `verify_chain_equivalence()` checks that flowprog, scipy, and
+(if installed) Brightway actually agree on the chain model's solution --
+otherwise the timings above would be comparing different calculations.
+
 Case (b): Chain-of-processes limit model with K limit steps
 ─────────────────────────────────────────────────────────────
 K+1 processes form a linear supply chain.  Each of the K limit steps
 uses object_production_deficit() to drive the next process, adding a
 Piecewise layer that references accumulated state from all prior steps.
-This causes expression complexity to grow rapidly with K.
+This used to cause expression complexity (and build time) to blow up
+super-linearly with K; since intermediate-expression handling was
+optimised, it scales close to linearly up to at least K=160 (see
+benchmarks/results).
 
 Capacity limits are symbolic parameters (cap_1, cap_2, …), not numeric.
 
@@ -75,6 +90,12 @@ def _with_timeout(fn, timeout_seconds: float):
 
     The background thread is not cancelled on timeout — it continues running
     until completion.  This is acceptable for benchmarking purposes.
+
+    A genuine timeout is silent (expected, and reported by the caller). Any
+    other exception -- e.g. RecursionError, which a sufficiently deep plain
+    chain hits well within the time budget, since pull_production() recurses
+    once per chain link -- is printed before returning None, so it isn't
+    mistaken for a timeout.
     """
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(fn)
@@ -82,7 +103,8 @@ def _with_timeout(fn, timeout_seconds: float):
         return future.result(timeout=timeout_seconds)
     except concurrent.futures.TimeoutError:
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[{type(e).__name__}: {e}] ", end="")
         return None
     finally:
         executor.shutdown(wait=False)
@@ -320,11 +342,102 @@ def bench_plain_bw25(n: int, project_name: str = "flowprog_benchmark") -> Option
     return dict(n=n, bw_db_setup=t_db_setup, bw_lci_solve=t_lci)
 
 
+# ── Correctness cross-check ────────────────────────────────────────────────────
+
+def verify_chain_equivalence(n: int, verbose: bool = True) -> None:
+    """Assert flowprog, scipy, and (if installed) Brightway agree on the
+    chain model's solution at size N, so the timings above are actually
+    comparing equivalent calculations.
+
+    All three solve the same bidiagonal linear system (each process's
+    activity level satisfies x[i] - 0.8*x[i+1] = demand at i==n-1 else 0),
+    so process activities should match to floating-point precision.
+    """
+    processes, objects, recipe = _make_chain(n)
+    builder = ModelBuilder(processes, objects)
+    builder.add(builder.pull_production(f"O{n - 1}", DEMAND_A))
+    model = builder.build(recipe)
+    fn = model.lambdify(expressions={i: model.Y[i] for i in range(n)}, modules="math")
+    flowprog_result = fn({DEMAND_A: 1.0})
+    flowprog_x = np.array([flowprog_result[i] for i in range(n)])
+
+    scipy_x = scipy.sparse.linalg.spsolve(*_chain_matrix(n))
+
+    if not np.allclose(flowprog_x, scipy_x, rtol=1e-9, atol=1e-9):
+        raise AssertionError(
+            f"flowprog chain solve disagrees with scipy at N={n}:\n"
+            f"  flowprog = {flowprog_x}\n  scipy    = {scipy_x}"
+        )
+
+    bw2data, bw2calc = _try_import_bw()
+    if bw2data is None:
+        if verbose:
+            print(f"  cross-check OK: flowprog == scipy (N={n}); brightway not installed, skipped")
+        return
+
+    bw_x = _bw_chain_solution(bw2data, bw2calc, n)
+    if not np.allclose(flowprog_x, bw_x, rtol=1e-6, atol=1e-9):
+        raise AssertionError(
+            f"flowprog chain solve disagrees with Brightway at N={n}:\n"
+            f"  flowprog  = {flowprog_x}\n  brightway = {bw_x}"
+        )
+    if verbose:
+        print(f"  cross-check OK: flowprog == scipy == brightway (N={n})")
+
+
+def _chain_matrix(n: int):
+    """Build the (A, f) bidiagonal system for the N-object chain."""
+    rows, cols, vals = [], [], []
+    for i in range(n):
+        rows.append(i); cols.append(i); vals.append(1.0)
+        if i > 0:
+            rows.append(i - 1); cols.append(i); vals.append(-0.8)
+    A = scipy.sparse.csc_matrix((vals, (rows, cols)), shape=(n, n))
+    f = np.zeros(n)
+    f[n - 1] = 1.0
+    return A, f
+
+
+def _bw_chain_solution(bw2data, bw2calc, n: int, project_name: str = "flowprog_benchmark"):
+    """Solve the N-object chain via Brightway; return activities indexed 0..N-1."""
+    db_name = f"chain_check_{n}"
+    bw2data.projects.set_current(project_name)
+    if db_name in bw2data.databases:
+        del bw2data.databases[db_name]
+    db = bw2data.Database(db_name)
+    data = {}
+    for i in range(n):
+        key = (db_name, f"P{i}")
+        exchanges = [{"input": key, "output": key, "amount": 1.0, "type": "production"}]
+        if i > 0:
+            exchanges.append({
+                "input": (db_name, f"P{i-1}"),
+                "output": key,
+                "amount": 0.8,
+                "type": "technosphere",
+            })
+        data[key] = {"name": f"P{i}", "unit": "unit", "exchanges": exchanges}
+    db.write(data)
+    try:
+        final_act = db.get(f"P{n - 1}")
+        lca = bw2calc.LCA({final_act: 1.0})
+        lca.lci()
+        return np.array([
+            lca.supply_array[lca.activity_dict[db.get(f"P{i}").id]] for i in range(n)
+        ])
+    finally:
+        del bw2data.databases[db_name]
+
+
 # ── Run case (a) ──────────────────────────────────────────────────────────────
 
 def run_case_a(sizes, verbose=True, timeout=30.0):
     bw2data, _ = _try_import_bw()
     has_bw = bw2data is not None
+
+    if verbose:
+        print("Cross-checking flowprog vs scipy vs brightway...")
+    verify_chain_equivalence(sizes[0], verbose=verbose)
 
     chain_rows, fan_rows, sp_rows, bw_rows = [], [], [], []
     chain_alive = fan_alive = scipy_alive = bw_alive = True
@@ -352,7 +465,7 @@ def run_case_a(sizes, verbose=True, timeout=30.0):
             if r is None:
                 chain_alive = False
                 if verbose:
-                    print("TIMEOUT — skipping chain for larger N")
+                    print("no result (timeout, or exception noted above) — skipping chain for larger N")
             else:
                 chain_rows.append(r)
                 if verbose:
@@ -366,7 +479,7 @@ def run_case_a(sizes, verbose=True, timeout=30.0):
             if r is None:
                 fan_alive = False
                 if verbose:
-                    print("TIMEOUT — skipping fan for larger N")
+                    print("no result (timeout, or exception noted above) — skipping fan for larger N")
             else:
                 fan_rows.append(r)
                 if verbose:
@@ -482,23 +595,35 @@ def _chain_limit_params(k: int) -> dict:
 def run_case_b(step_counts, verbose=True, timeout=30.0):
     """Run case (b) for each K in step_counts.
 
-    Tracks per-phase bail: lambdify_np and lambdify_math are stopped independently
-    once they time out.
+    Tracks per-phase bail: build/compile, lambdify_np, and lambdify_math are
+    each stopped independently once they time out.
     """
     rows = []
+    struct_alive = True
     np_alive = True
     math_alive = True
 
     for k in step_counts:
+        if not struct_alive:
+            break
+
         if verbose:
             print(f"  K={k:3d}...", end=" ", flush=True)
 
-        # Build + compile + structure (fast, no timeout needed)
-        t_build = _tmin(lambda k=k: _make_chain_limit_model(k), reps=3)
-        builder, recipe = _make_chain_limit_model(k)
-        t_compile = _tmin(lambda: builder.build(recipe), reps=3)
-        model = builder.build(recipe)
-        struct = measure_structure(model)
+        def _do_build_compile(k=k):
+            t_build = _tmin(lambda: _make_chain_limit_model(k), reps=3)
+            builder, recipe = _make_chain_limit_model(k)
+            t_compile = _tmin(lambda: builder.build(recipe), reps=3)
+            model = builder.build(recipe)
+            return t_build, t_compile, model, measure_structure(model)
+
+        res = _with_timeout(_do_build_compile, timeout)
+        if res is None:
+            struct_alive = False
+            if verbose:
+                print("no result on build/compile (timeout, or exception noted above) — stopping")
+            break
+        t_build, t_compile, model, struct = res
 
         # lambdify_np
         t_lambdify_np = None
@@ -568,9 +693,9 @@ def run_case_b(step_counts, verbose=True, timeout=30.0):
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
-SIZES_FULL = [5, 10, 20, 50, 100, 200]
+SIZES_FULL = [5, 10, 20, 50, 100, 200, 500, 1000, 2000]
 SIZES_QUICK = [5, 10, 20]
-STEPS_FULL = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16]
+STEPS_FULL = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20, 24, 32, 48, 64, 96, 128, 160]
 STEPS_QUICK = [1, 2, 3, 4, 5]
 
 
